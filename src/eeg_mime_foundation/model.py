@@ -9,18 +9,18 @@ import torch.nn.functional as F
 
 
 @dataclass
-class MIMEModelConfig:
+class BSGMIMEConfig:
     input_seconds: float = 4.0
     sampling_rate: int = 160
     max_channels: int = 64
     patch_seconds: float = 0.5
     patch_stride_seconds: float = 0.5
-    d_model: int = 224
+    d_model: int = 192
     depth: int = 6
-    num_heads: int = 8
-    mlp_ratio: int = 4
+    mlp_ratio: int = 2
+    graph_topk: int = 12
+    propagation_steps: int = 3
     dropout: float = 0.1
-    attention_dropout: float = 0.1
     state_classes: int = 2
     body_classes: int = 4
     joint_classes: int = 8
@@ -42,10 +42,13 @@ class MIMEModelConfig:
         return 1 + (self.input_samples - self.patch_samples) // self.patch_stride_samples
 
 
-class BandAwarePatchEmbedding(nn.Module):
-    """Shared raw-patch projection plus non-trainable mu/beta bandpower features."""
+MIMEModelConfig = BSGMIMEConfig
 
-    def __init__(self, config: MIMEModelConfig) -> None:
+
+class BandAwarePatchEmbedding(nn.Module):
+    """Raw patch projection plus fixed mu/beta bandpower cues for MI/ME."""
+
+    def __init__(self, config: BSGMIMEConfig) -> None:
         super().__init__()
         self.config = config
         self.raw_projection = nn.Linear(config.patch_samples, config.d_model)
@@ -66,8 +69,7 @@ class BandAwarePatchEmbedding(nn.Module):
             step=self.config.patch_stride_samples,
         )
         raw_tokens = self.raw_projection(patches)
-        bandpower = self._bandpower_features(patches)
-        band_tokens = self.band_projection(bandpower)
+        band_tokens = self.band_projection(self._bandpower_features(patches))
         return self.norm(raw_tokens + band_tokens), patches
 
     def _bandpower_features(self, patches: Tensor) -> Tensor:
@@ -81,35 +83,36 @@ class BandAwarePatchEmbedding(nn.Module):
         values = []
         for low, high in bands:
             mask = (freqs >= low) & (freqs <= high)
-            if not torch.any(mask):
-                values.append(torch.zeros_like(power[..., 0]))
-            else:
+            if torch.any(mask):
                 values.append(torch.log1p(power[..., mask].mean(dim=-1)))
+            else:
+                values.append(torch.zeros_like(power[..., 0]))
         return torch.stack(values, dim=-1).to(dtype=patches.dtype)
 
 
-class FactorizedMIMEBlock(nn.Module):
-    """Alternates temporal attention within each channel and spatial attention across channels."""
+class BalancedSignedGraphUnrollBlock(nn.Module):
+    """BGL + LPF algorithm-unrolling block inspired by balanced signed graph EEG Transformer."""
 
-    def __init__(self, config: MIMEModelConfig) -> None:
+    def __init__(self, config: BSGMIMEConfig) -> None:
         super().__init__()
+        self.config = config
+        self.graph_norm = nn.LayerNorm(config.d_model)
+        self.query = nn.Linear(config.d_model, config.d_model, bias=False)
+        self.sign_head = nn.Linear(config.d_model, 1)
+        self.cutoff_logit = nn.Parameter(torch.tensor(0.0))
+        self.output_projection = nn.Linear(config.d_model, config.d_model)
+
         self.temporal_norm = nn.LayerNorm(config.d_model)
-        self.temporal_attn = nn.MultiheadAttention(
-            embed_dim=config.d_model,
-            num_heads=config.num_heads,
-            dropout=config.attention_dropout,
-            batch_first=True,
+        self.temporal_filter = nn.Conv1d(
+            config.d_model,
+            config.d_model,
+            kernel_size=3,
+            padding=1,
+            groups=config.d_model,
         )
-        self.spatial_norm = nn.LayerNorm(config.d_model)
-        self.spatial_attn = nn.MultiheadAttention(
-            embed_dim=config.d_model,
-            num_heads=config.num_heads,
-            dropout=config.attention_dropout,
-            batch_first=True,
-        )
-        self.mlp_norm = nn.LayerNorm(config.d_model)
         hidden = config.d_model * config.mlp_ratio
-        self.mlp = nn.Sequential(
+        self.ffn_norm = nn.LayerNorm(config.d_model)
+        self.ffn = nn.Sequential(
             nn.Linear(config.d_model, hidden),
             nn.GELU(),
             nn.Dropout(config.dropout),
@@ -118,35 +121,53 @@ class FactorizedMIMEBlock(nn.Module):
         )
 
     def forward(self, x: Tensor, channel_mask: Optional[Tensor] = None) -> Tensor:
+        x = x + self.output_projection(self._balanced_signed_lpf(self.graph_norm(x), channel_mask))
+        x = x + self._temporal_lpf(self.temporal_norm(x))
+        return x + self.ffn(self.ffn_norm(x))
+
+    def _balanced_signed_lpf(self, x: Tensor, channel_mask: Optional[Tensor]) -> Tensor:
         batch, channels, patches, dim = x.shape
+        nodes = x.permute(0, 2, 1, 3).reshape(batch * patches, channels, dim)
+        query = F.normalize(self.query(nodes), dim=-1)
+        affinity = torch.matmul(query, query.transpose(-1, -2)) / (dim**0.5)
 
-        temporal = self.temporal_norm(x).reshape(batch * channels, patches, dim)
-        temporal_out, _ = self.temporal_attn(temporal, temporal, temporal, need_weights=False)
-        x = x + temporal_out.reshape(batch, channels, patches, dim)
-
-        spatial = self.spatial_norm(x).permute(0, 2, 1, 3).reshape(batch * patches, channels, dim)
-        key_padding_mask = None
+        valid_mask = None
         if channel_mask is not None:
-            key_padding_mask = (~channel_mask.bool()).repeat_interleave(patches, dim=0)
-        spatial_out, _ = self.spatial_attn(
-            spatial,
-            spatial,
-            spatial,
-            key_padding_mask=key_padding_mask,
-            need_weights=False,
-        )
-        spatial_out = spatial_out.reshape(batch, patches, channels, dim).permute(0, 2, 1, 3)
-        x = x + spatial_out
+            valid = channel_mask.bool().repeat_interleave(patches, dim=0)
+            valid_mask = valid[:, :, None] & valid[:, None, :]
+            affinity = affinity.masked_fill(~valid_mask, -1.0e4)
 
-        return x + self.mlp(self.mlp_norm(x))
+        if 0 < self.config.graph_topk < channels:
+            topk_idx = affinity.topk(k=self.config.graph_topk, dim=-1).indices
+            topk_mask = torch.zeros_like(affinity, dtype=torch.bool)
+            topk_mask.scatter_(-1, topk_idx, True)
+            if valid_mask is not None:
+                topk_mask = topk_mask & valid_mask
+            affinity = affinity.masked_fill(~topk_mask, -1.0e4)
+
+        graph = torch.softmax(affinity, dim=-1)
+        polarity = torch.tanh(self.sign_head(nodes))
+        balanced_nodes = nodes * polarity
+        filtered = balanced_nodes
+        keep = torch.sigmoid(self.cutoff_logit)
+        for _ in range(self.config.propagation_steps):
+            filtered = keep * balanced_nodes + (1.0 - keep) * torch.matmul(graph, filtered)
+        restored = filtered * polarity
+        return restored.reshape(batch, patches, channels, dim).permute(0, 2, 1, 3)
+
+    def _temporal_lpf(self, x: Tensor) -> Tensor:
+        batch, channels, patches, dim = x.shape
+        seq = x.reshape(batch * channels, patches, dim).transpose(1, 2)
+        filtered = self.temporal_filter(seq).transpose(1, 2)
+        return filtered.reshape(batch, channels, patches, dim)
 
 
-class MIMEFactorizedTransformer(nn.Module):
-    """5M-level MI/ME foundation encoder with reconstruction and hierarchical heads."""
+class BalancedSignedGraphMIME(nn.Module):
+    """Lightweight MI/ME encoder replacing attention Transformer with BSG unrolling."""
 
-    def __init__(self, config: Optional[MIMEModelConfig] = None) -> None:
+    def __init__(self, config: Optional[BSGMIMEConfig] = None) -> None:
         super().__init__()
-        self.config = config or MIMEModelConfig()
+        self.config = config or BSGMIMEConfig()
         cfg = self.config
 
         self.patch_embed = BandAwarePatchEmbedding(cfg)
@@ -155,7 +176,7 @@ class MIMEFactorizedTransformer(nn.Module):
         self.mask_token = nn.Parameter(torch.zeros(1, 1, 1, cfg.d_model))
         self.dropout = nn.Dropout(cfg.dropout)
 
-        self.blocks = nn.ModuleList([FactorizedMIMEBlock(cfg) for _ in range(cfg.depth)])
+        self.blocks = nn.ModuleList([BalancedSignedGraphUnrollBlock(cfg) for _ in range(cfg.depth)])
         self.final_norm = nn.LayerNorm(cfg.d_model)
 
         self.reconstruction_head = nn.Linear(cfg.d_model, cfg.patch_samples)
@@ -177,7 +198,7 @@ class MIMEFactorizedTransformer(nn.Module):
         patch_mask: Optional[Tensor] = None,
     ) -> Tensor:
         tokens, _ = self.patch_embed(x)
-        batch, channels, patches, _ = tokens.shape
+        _, channels, patches, _ = tokens.shape
         if channels > self.config.max_channels:
             raise ValueError(f"Expected at most {self.config.max_channels} channels, got {channels}")
 
@@ -213,8 +234,7 @@ class MIMEFactorizedTransformer(nn.Module):
         patch_mask: Optional[Tensor] = None,
     ) -> Tensor:
         _, target_patches = self.patch_embed(x)
-        prediction = outputs["reconstruction"]
-        loss = F.mse_loss(prediction, target_patches, reduction="none").mean(dim=-1)
+        loss = F.mse_loss(outputs["reconstruction"], target_patches, reduction="none").mean(dim=-1)
         if patch_mask is not None:
             weights = patch_mask.float()
             return (loss * weights).sum() / weights.sum().clamp_min(1.0)
@@ -223,8 +243,13 @@ class MIMEFactorizedTransformer(nn.Module):
     def _masked_pool(self, features: Tensor, channel_mask: Optional[Tensor]) -> Tensor:
         if channel_mask is None:
             return features.mean(dim=(1, 2))
-        weights = channel_mask.float()[:, :, None, None].expand_as(features)
-        return (features * weights).sum(dim=(1, 2)) / weights.sum(dim=(1, 2)).clamp_min(1.0)
+        weights = channel_mask.float()[:, :, None, None]
+        numerator = (features * weights).sum(dim=(1, 2))
+        denominator = weights.sum(dim=(1, 2)).clamp_min(1.0)
+        return numerator / denominator
+
+
+MIMEFactorizedTransformer = BalancedSignedGraphMIME
 
 
 def count_parameters(model: nn.Module, trainable_only: bool = True) -> int:

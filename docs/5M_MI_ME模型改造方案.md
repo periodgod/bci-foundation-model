@@ -1,13 +1,13 @@
-# 5M MI+ME 模型改造方案
+# BSG 轻量 MI+ME 模型改造方案
 
-本文档把项目第一版模型从 10M 通用 EEG encoder 收敛为 5M 级 MI+ME 领域基础模型。
+本文档把项目第一版模型从 10M 通用 EEG encoder 收敛为 5M 以下的 MI+ME 领域基础模型。当前默认模型参考图片中的 “Lightweight Transformer for EEG Classification via Balanced Signed Graph Algorithm Unrolling” 思路，将普通注意力 Transformer 替换为 **BGL 图学习 + LPF 低通图滤波** 的算法展开结构。
 
 ## 1. 核心判断
 
 只用 PhysioNet Motor Movement/Imagery 做预训练时，数据量约 43.6 小时任务 EEG。这个规模更适合：
 
 ```text
-3M-5M MI/ME 领域基础模型
+5M 以下 MI/ME 领域基础模型
 ```
 
 不适合作为唯一数据源训练更大的通用 EEG 大模型。
@@ -27,7 +27,7 @@
 名称：
 
 ```text
-MIME-Factorized Transformer 5M
+BalancedSignedGraphMIME
 ```
 
 输入：
@@ -49,17 +49,18 @@ patch：
 主干：
 
 ```text
-d_model = 224
+d_model = 192
 depth = 6
-heads = 8
-attention = temporal attention + spatial attention
+graph_topk = 12
+propagation_steps = 3
+block = BGL + balanced signed LPF + temporal LPF + FFN
 ```
 
 参数量：
 
 ```text
-encoder 约 5M
-加重建头和分类头后仍保持 5M 级别
+总参数 1,393,642
+低于 5M 预算，适合 PhysioNet 单数据集预训练
 ```
 
 ## 4. 为什么不用普通 Transformer
@@ -70,17 +71,23 @@ encoder 约 5M
 2. 它不知道时间动态和通道空间关系是两种不同结构。
 3. 它容易在小数据上学习设备或被试噪声。
 
-因此改为分解式注意力：
+因此改为平衡符号图算法展开：
 
 ```text
-Temporal attention:
-  每个通道内部看 8 个时间 patch，学习 ERD/ERS 时间变化。
+BGL:
+  根据每个时间片内的通道 token 学习通道图。
 
-Spatial attention:
-  每个时间 patch 内看 64 个通道，学习感觉运动区空间模式。
+Balanced signed graph:
+  学习每个通道 token 的极性，用符号变换把 signed graph 转为 positive graph。
+
+LPF:
+  在 positive graph 上做低通图滤波，再映射回原信号空间。
+
+Temporal LPF:
+  用轻量 depthwise temporal filter 保留 ERD/ERS 时间连续性。
 ```
 
-这比全局 attention 更符合 MI+ME，也更省参数和算力。
+这比全局 attention 更符合小数据 MI+ME，也更省参数和算力。
 
 ## 5. MI+ME 先验如何注入
 
@@ -152,13 +159,12 @@ bandpower: 0.5
 
 1. FBCSP-LDA / Riemannian / EEGNet baseline。
 2. 1M-2M sanity model。
-3. 5M 主模型。
-4. 10M 上限对照。
+3. BSG 轻量主模型。
+4. 5M/10M 上限对照，仅在主模型有效后再做。
 
-如果 5M 模型不能超过传统 baseline，不应继续堆参数。
+如果 BSG 轻量主模型不能超过传统 baseline，不应继续堆参数。
 
 ## 8. 当前实现入口
 
 - 配置：`configs/model_5m_mime.yaml`
 - 模型代码：`src/eeg_mime_foundation/model.py`
-

@@ -1,12 +1,11 @@
 from .model import (
-    MIMEFactorizedTransformer,
-    MIMEModelConfig,
+    BSGMIMEConfig,
+    BalancedSignedGraphMIME,
     count_parameters,
 )
 
 __all__ = [
-    "MIMEFactorizedTransformer",
-    "MIMEModelConfig",
+    "BSGMIMEConfig",
+    "BalancedSignedGraphMIME",
     "count_parameters",
 ]
-

@@ -1,5 +1,5 @@
 model:
-  name: mime_factorized_transformer_5m
+  name: bsg_unrolled_mime_lightweight
   target_domain: motor_imagery_motor_execution
   input_seconds: 4.0
   sampling_rate: 160
@@ -7,16 +7,17 @@ model:
   default_channels: 64
   patch_seconds: 0.5
   patch_stride_seconds: 0.5
-  d_model: 224
+  d_model: 192
   depth: 6
-  num_heads: 8
-  mlp_ratio: 4
+  mlp_ratio: 2
+  graph_topk: 12
+  propagation_steps: 3
   dropout: 0.1
-  attention_dropout: 0.1
   use_channel_embedding: true
   use_time_embedding: true
   use_bandpower_embedding: true
-  factorized_attention: temporal_then_spatial
+  architecture: balanced_signed_graph_algorithm_unrolling
+  attention: none
 
 mi_me_priors:
   motor_bands_hz:
@@ -86,4 +87,3 @@ evaluation:
     - riemannian_tangent_space
     - eegnet
     - minirocket
-

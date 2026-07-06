@@ -1,17 +1,17 @@
 # 脑电大模型
 
-目标：建设一个面向脑机接口和脑电智能分析的 EEG foundation model 项目。第一阶段收敛为 **5M 级 MI+ME 脑电基础模型**，优先服务运动想象、运动执行和自采 8 分类 MI+ME 极少样本快速适配任务。
+目标：建设一个面向脑机接口和脑电智能分析的 EEG foundation model 项目。第一阶段收敛为 **5M 以下 MI+ME 脑电基础模型**，优先服务运动想象、运动执行和自采 8 分类 MI+ME 极少样本快速适配任务。
 
 本项目原则：**训练之前，先把数据、任务、架构、评估、伦理、算力和文档问题逐项解决清楚。**
 
 ## 当前架构决策
 
-第一版采用 **MI+ME factorized channel-time Transformer encoder**：
+第一版采用 **Balanced Signed Graph Algorithm Unrolling** 风格的轻量 EEG Transformer：
 
 - 输入：多通道 EEG 连续片段。
 - tokenizer：每个通道按 0.5 秒切成 patch，融合 raw waveform 与 mu/beta bandpower。
 - 位置编码：时间位置编码 + 通道编码。
-- 主干：6 层分解式 Transformer，先做通道内 temporal attention，再做同一时刻的 spatial attention。
+- 主干：6 层 BGL + LPF 算法展开块，用平衡符号图学习通道关系并做低通图滤波，不使用 multi-head attention。
 - 预训练：masked channel-time reconstruction，加入频谱和 bandpower 约束。
 - 微调：MI/ME 状态头、身体部位头、8 分类联合头。
 
@@ -21,7 +21,7 @@
 
 | 项目 | 建议 |
 | --- | --- |
-| 参数量 | 主模型 4,899,870 参数，10M 仅作为上限对照 |
+| 参数量 | 主模型 1,393,642 参数，低于 5M 预算 |
 | 输入长度 | 4 秒 |
 | 采样率 | 160 Hz，优先贴合 PhysioNet 原生采样率 |
 | 通道数 | 64，支持 channel mask |
@@ -35,13 +35,13 @@
 
 - `docs/基础说明.md`：项目基础说明，先作为全项目共识文档。
 - `docs/训练前问题清单.md`：训练前必须解决的问题和决策状态。
-- `docs/5M_MI_ME模型改造方案.md`：5M MI+ME 架构改造说明。
+- `docs/5M_MI_ME模型改造方案.md`：BSG 轻量 MI+ME 架构改造说明。
 - `docs/完整实验方案.md`：从数据到账本、baseline、预训练、微调、画图和报告的完整流程。
 - `docs/architecture.md`：架构细节。
 - `docs/roadmap.md`：第一阶段路线。
-- `configs/model_5m_mime.yaml`：5M MI+ME 默认模型配置。
+- `configs/model_5m_mime.yaml`：BSG 轻量 MI+ME 默认模型配置。
 - `configs/model_10m.yaml`：默认模型配置。
-- `src/eeg_mime_foundation/model.py`：5M MI+ME PyTorch 模型骨架。
+- `src/eeg_mime_foundation/model.py`：BSG unrolled MI+ME PyTorch 模型骨架。
 - `data/README.md`：数据账本字段。
 - `experiments/README.md`：每次实验目录格式。
 - `results/README.md`：结果表保存规范。
@@ -50,7 +50,7 @@
 
 ## 当前阶段
 
-现在处于 **5M MI+ME 模型改造与预训练准备阶段**。
+现在处于 **BSG 轻量 MI+ME 模型改造与预训练准备阶段**。
 
 ## 快速检查
 
@@ -62,8 +62,8 @@ python scripts/count_5m_model_params.py
 期望输出：
 
 ```text
-total_parameters=4,899,870
-trainable_parameters=4,899,870
+total_parameters=1,393,642
+trainable_parameters=1,393,642
 ```
 
 进入正式训练前，必须完成：
@@ -79,4 +79,4 @@ trainable_parameters=4,899,870
 9. 实验记录与复现规范。
 10. 风险清单和终止条件。
 
-当前执行顺序以 `docs/完整实验方案.md` 为准。没有完成数据账本、传统 baseline 和 1M-2M sanity model 前，不启动 5M 主模型正式预训练。
+当前执行顺序以 `docs/完整实验方案.md` 为准。没有完成数据账本、传统 baseline 和 1M-2M sanity model 前，不启动主模型正式预训练。
