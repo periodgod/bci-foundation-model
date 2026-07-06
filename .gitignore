@@ -1,0 +1,42 @@
+# Python/cache
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Local environments
+.env
+.venv/
+venv/
+env/
+
+# Data and generated artifacts
+data/raw/
+data/processed/
+data/downloads/
+**/checkpoints/
+**/outputs/
+**/cache/
+*.edf
+*.bdf
+*.set
+*.fdt
+*.mat
+*.npz
+*.npy
+*.csv.tmp
+
+# Model artifacts
+*.pt
+*.pth
+*.onnx
+*.joblib
+*.pkl
+
+# Logs and temp files
+*.log
+*.tmp
+*.part
+*.partial
+

@@ -1,0 +1,46 @@
+model:
+  name: eeg_patch_transformer_10m
+  input_seconds: 4.0
+  sampling_rate: 200
+  max_channels: 64
+  default_channels: 32
+  patch_seconds: 1.0
+  d_model: 256
+  depth: 8
+  num_heads: 8
+  mlp_ratio: 4
+  dropout: 0.1
+  attention_dropout: 0.1
+  use_channel_embedding: true
+  use_time_embedding: true
+  use_dataset_embedding: true
+
+pretraining:
+  task: masked_channel_time_reconstruction
+  mask_ratio: 0.6
+  decoder_depth: 2
+  decoder_dim: 256
+  raw_mse_weight: 1.0
+  spectral_mse_weight: 0.2
+  optimizer: adamw
+  learning_rate: 0.0003
+  weight_decay: 0.05
+  warmup_ratio: 0.05
+
+preprocessing:
+  resample_hz: 200
+  bandpass_hz: [0.5, 45.0]
+  notch_hz: 50.0
+  reference: average
+  unit: microvolt
+
+evaluation:
+  splits:
+    - within_subject
+    - leave_one_subject_out
+    - cross_subject
+  baselines:
+    - fbcsp_lda
+    - riemannian_tangent_space
+    - eegnet
+
