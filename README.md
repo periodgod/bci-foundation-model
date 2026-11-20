@@ -94,14 +94,57 @@
 | 实验 | 状态 | 说明 |
 |---|---|---|
 | 通道丢弃鲁棒性（MI，小容量模型） | ✅ 有结果 | [`reports/channel_dropout_mi.json`](reports/channel_dropout_mi.json)：154k 参数模型基线 BA 53.6%，保留 8 通道降至 49.5%（20 次随机抽样）。注意小容量模型基线本身偏低 |
-| 6 结构对照（MI，固定 8 epoch） | ⚠️ **未完成** | 单结构约需 8 分钟 CPU 训练，实际只完成第 1 个结构即终止；脚本 [`scripts/run_arch_ablation.py`](scripts/run_arch_ablation.py) 可直接续跑 |
+| 6 结构对照（MI，固定 40 epoch，seed 17） | ⚠️ 已完成，**差异不显著** | [`reports/arch_ablation_mi.json`](reports/arch_ablation_mi.json)：跨度 0.506–0.581，小于噪声量级。见下节 |
+| 导联子集迁移（T1，仿真稀疏布局） | ⚠️ 已跑通，**结论不成立** | 64→32/19/8/3 导的 Δ 全部不显著；根因是基线本身处于机会水平。详见下节 |
 | 大容量主候选的通道鲁棒性 | ⚠️ **无法给出结论** | 4.9M 主候选在 270 训练窗口下塌缩为常数预测（BA 0.5000），曲线无意义 |
-| 跨设备 / 可变电极迁移 | ❌ **无数据** | 需要同一任务的多套电极布局，当前只有单一 64 导布局 |
+| 真实跨设备 / 跨数据集迁移 | ❌ **无数据** | 需要同任务、不同硬件的第二份数据（2a / 2b / OpenBMI），当前只有单一 64 导布局 |
 | BSG 图结构消融 | ❌ **不适用** | BSG 未进入当前管线（见上文） |
 | 正式预训练 | ❌ **未启动** | 受限于数据规模与清洗协议确认 |
 | EEG-to-LLM 指令调优 | ❌ **未实现** | 仓库内无相关代码 |
 
 > 原则：**没有数据就写没有数据**，不用合成数据冒充结果。缺失项在上表中逐条列出。
+
+### 结构对照（MI）：六个结构都停在机会水平附近
+
+同一划分、同一 epoch 预算（40）、同一随机种子（17），只改 `model.architecture`：
+
+| 结构 | 参数量 | BA |
+|---|---|---|
+| causal | 71k | 0.581 |
+| latent | 187k | 0.559 |
+| compact | 47k | 0.554 |
+| fusion | 154k | 0.546 |
+| factorized | 138k | 0.526 |
+| hierarchical | 179k | 0.506 |
+
+跨度 0.506–0.581 共 7.6 个百分点，而 135 个留出样本上单次评测的标准误约 4.3 个百分点——
+**这个跨度落在噪声区间内，不能据此给结构排序**；且只跑了单一 seed，下结论需多种子重复。
+唯一可以说的：在这份数据上，没有哪个结构明显跑出机会水平。
+
+### 导联子集迁移（T1）：脚本可跑，但当前数据给不出有效结论
+
+同一套权重，只把部分通道置为无效（电极 ID 与坐标保留），模拟换一顶更稀疏的电极帽。
+135 个留出样本（4 名未见被试），指标取被试级 macro BA，Δ 用 2000 次配对 bootstrap 给 95% CI。
+复现：`scripts/eval_montage_transfer.py`，结果：[`reports/montage_transfer_mi_fusion.json`](reports/montage_transfer_mi_fusion.json)。
+
+| 条件 | 保留导联 | BA | Δ vs 全导联 | 95% CI |
+|---|---|---|---|---|
+| 全导联 | 64 | 0.551 | — | [0.469, 0.630] |
+| 10-10 系统 | 32 | 0.525 | −0.026 | [−0.108, +0.051] |
+| 10-20 系统 | 19 | 0.504 | −0.047 | [−0.127, +0.032] |
+| 感觉运动区 | 8 | 0.522 | −0.029 | [−0.134, +0.077] |
+| BCIV-2b 布局 | 3 | 0.525 | −0.027 | [−0.129, +0.066] |
+
+**这张表必须读对。** 所有条件都没有显著下降，**不能**当作"模型对稀疏导联鲁棒"的证据——
+基线本身 95% CI 覆盖 0.5，本来就没有可损失的性能，砍到 3 导自然也不掉。
+同样的道理，脑区整块移除（中央区 −0.001、枕区 −0.002、额区 −0.059）同样全部不显著。
+
+要让它变成有效结论，前提是基线先高于机会水平：引入 **BCI Competition IV 2a**
+（22 导 / 9 被试 / 每被试 288 试次）把被试内解码做到 70% 以上，再测同一组导联子集。
+
+与此配套，仓库验证了一个**结构性性质**而非分数：给 64 通道输入补 16 个标记为无效的通道，
+logits 差异严格为 0（`tests/test_montage.py::test_padding_does_not_change_output`）。
+也就是说"任意通道数可进"在数值上是真成立的，不是名义上的——缺的只是能体现差异的强基线。
 
 ---
 
@@ -119,6 +162,15 @@ python scripts/run_arch_ablation.py \
 python scripts/eval_channel_dropout.py \
     --checkpoint <best.pt> --manifest <manifest.json> \
     --output reports/channel_dropout.json --reps 10
+
+# 导联子集迁移 T1（固定 10-20 / 10-10 / 3 导布局 + 随机下采样 + 脑区移除，带配对 bootstrap）
+python scripts/eval_montage_transfer.py \
+    --checkpoint experiments/outputs/compact-fusion/best.pt --manifest <mi manifest> \
+    --output reports/montage_transfer_mi_fusion.json --reps 20
+
+# 训练紧凑骨干（大容量模型在小样本上会塌缩，评测前先用这个拿到非退化权重）
+python scripts/train_compact.py --name compact-fusion --arch fusion \
+    --manifest <mi manifest> --base-config <config.json> --epochs 60
 
 # 单次训练 / 评估
 python -m eeg_mime_foundation.cli train --config configs/fusion_masked.json \

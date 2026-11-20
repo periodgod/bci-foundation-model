@@ -1,0 +1,206 @@
+{
+  "task": "T1_montage_transfer",
+  "checkpoint": "D:\\wyu-bci\\bci-foundation-model\\experiments\\outputs\\compact-fusion\\best.pt",
+  "manifest": "E:\\世界机器人大赛\\projects\\脑电大模型\\data\\processed\\precheck\\mi-development-v1\\manifest.json",
+  "split": "validation",
+  "samples": 135,
+  "channels": 64,
+  "baseline": {
+    "balanced_accuracy": 0.5511663732394366,
+    "accuracy": 0.5481481481481482,
+    "recall": {
+      "0": 0.49295774647887325,
+      "1": 0.609375
+    },
+    "predicted_classes": [
+      0,
+      1
+    ],
+    "ci95": [
+      0.469217032967033,
+      0.6299707476274091
+    ]
+  },
+  "montages": [
+    {
+      "balanced_accuracy": 0.5254181338028169,
+      "accuracy": 0.5259259259259259,
+      "recall": {
+        "0": 0.5352112676056338,
+        "1": 0.515625
+      },
+      "predicted_classes": [
+        0,
+        1
+      ],
+      "montage": "10-10-32",
+      "kept": 32,
+      "delta": -0.025748239436619746,
+      "delta_ci95": [
+        -0.10802744708994708,
+        0.050595238095238027
+      ]
+    },
+    {
+      "balanced_accuracy": 0.5042913732394366,
+      "accuracy": 0.5037037037037037,
+      "recall": {
+        "0": 0.49295774647887325,
+        "1": 0.515625
+      },
+      "predicted_classes": [
+        0,
+        1
+      ],
+      "montage": "10-20-19",
+      "kept": 19,
+      "delta": -0.046875,
+      "delta_ci95": [
+        -0.1274400308098592,
+        0.03236100810538659
+      ]
+    },
+    {
+      "balanced_accuracy": 0.522337147887324,
+      "accuracy": 0.5259259259259259,
+      "recall": {
+        "0": 0.5915492957746479,
+        "1": 0.453125
+      },
+      "predicted_classes": [
+        0,
+        1
+      ],
+      "montage": "sensorimotor-8",
+      "kept": 8,
+      "delta": -0.02882922535211263,
+      "delta_ci95": [
+        -0.13378623903162676,
+        0.07690138196241822
+      ]
+    },
+    {
+      "balanced_accuracy": 0.524537852112676,
+      "accuracy": 0.5185185185185185,
+      "recall": {
+        "0": 0.4084507042253521,
+        "1": 0.640625
+      },
+      "predicted_classes": [
+        0,
+        1
+      ],
+      "montage": "bciv2b-3",
+      "kept": 3,
+      "delta": -0.026628521126760618,
+      "delta_ci95": [
+        -0.12898291401580875,
+        0.0657528326096835
+      ]
+    }
+  ],
+  "random_dropout": [
+    {
+      "keep": 56,
+      "mean": 0.5098206426056339,
+      "std": 0.02042882673258952,
+      "reps": 20
+    },
+    {
+      "keep": 48,
+      "mean": 0.49896566901408457,
+      "std": 0.019105211918778633,
+      "reps": 20
+    },
+    {
+      "keep": 40,
+      "mean": 0.506668133802817,
+      "std": 0.02668328689804205,
+      "reps": 20
+    },
+    {
+      "keep": 32,
+      "mean": 0.4998569542253521,
+      "std": 0.038082900482584024,
+      "reps": 20
+    },
+    {
+      "keep": 24,
+      "mean": 0.5059584066901409,
+      "std": 0.02146042864409135,
+      "reps": 20
+    },
+    {
+      "keep": 16,
+      "mean": 0.5082801496478873,
+      "std": 0.042951154500350426,
+      "reps": 20
+    },
+    {
+      "keep": 8,
+      "mean": 0.4896071742957747,
+      "std": 0.03658540012422867,
+      "reps": 20
+    }
+  ],
+  "region_removal": [
+    {
+      "balanced_accuracy": 0.5503961267605634,
+      "accuracy": 0.5481481481481482,
+      "recall": {
+        "0": 0.5070422535211268,
+        "1": 0.59375
+      },
+      "predicted_classes": [
+        0,
+        1
+      ],
+      "region": "central",
+      "dropped": 7,
+      "delta": -0.0007702464788732488,
+      "delta_ci95": [
+        -0.03689064558629784,
+        0.035468089135786834
+      ]
+    },
+    {
+      "balanced_accuracy": 0.5488556338028169,
+      "accuracy": 0.5481481481481482,
+      "recall": {
+        "0": 0.5352112676056338,
+        "1": 0.5625
+      },
+      "predicted_classes": [
+        0,
+        1
+      ],
+      "region": "occipital",
+      "dropped": 9,
+      "delta": -0.0023107394366197465,
+      "delta_ci95": [
+        -0.05185523310273422,
+        0.047183074511289204
+      ]
+    },
+    {
+      "balanced_accuracy": 0.4925176056338028,
+      "accuracy": 0.4888888888888889,
+      "recall": {
+        "0": 0.4225352112676056,
+        "1": 0.5625
+      },
+      "predicted_classes": [
+        0,
+        1
+      ],
+      "region": "frontal",
+      "dropped": 17,
+      "delta": -0.05864876760563381,
+      "delta_ci95": [
+        -0.14016515980789346,
+        0.022076745718050076
+      ]
+    }
+  ],
+  "protocol": "dropped channels set valid=False (not zero-filled); channel IDs and coordinates preserved so the model sees a sparser montage rather than corrupted signal"
+}

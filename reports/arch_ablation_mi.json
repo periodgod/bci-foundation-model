@@ -1,0 +1,65 @@
+{
+  "manifest": "E:\\世界机器人大赛\\projects\\脑电大模型\\data\\processed\\precheck\\mi-development-v1\\manifest.json",
+  "seeds": [
+    17
+  ],
+  "epochs": 40,
+  "split": "validation",
+  "metric": "balanced_accuracy",
+  "rows": [
+    {
+      "architecture": "fusion",
+      "params": 153874,
+      "scores": [
+        0.5461368341803124
+      ],
+      "mean": 0.5461368341803124,
+      "std": 0.0
+    },
+    {
+      "architecture": "factorized",
+      "params": 138210,
+      "scores": [
+        0.5257191480017568
+      ],
+      "mean": 0.5257191480017568,
+      "std": 0.0
+    },
+    {
+      "architecture": "compact",
+      "params": 46818,
+      "scores": [
+        0.5540419725202335
+      ],
+      "mean": 0.5540419725202335,
+      "std": 0.0
+    },
+    {
+      "architecture": "latent",
+      "params": 187410,
+      "scores": [
+        0.5590258171779912
+      ],
+      "mean": 0.5590258171779912,
+      "std": 0.0
+    },
+    {
+      "architecture": "hierarchical",
+      "params": 178834,
+      "scores": [
+        0.5055445761967501
+      ],
+      "mean": 0.5055445761967501,
+      "std": 0.0
+    },
+    {
+      "architecture": "causal",
+      "params": 71138,
+      "scores": [
+        0.5811923583662714
+      ],
+      "mean": 0.5811923583662714,
+      "std": 0.0
+    }
+  ]
+}
