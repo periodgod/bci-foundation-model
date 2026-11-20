@@ -198,6 +198,7 @@ bci-foundation-model/
 
 ## 文档 / Docs
 
+- [`docs/能力与代码对应表.md`](docs/能力与代码对应表.md) — 每项能力的状态、代码位置与证据（哪些只是架构支持、哪些已有实验）
 - [`docs/architecture.md`](docs/architecture.md) — 编码器与数据流
 - [`docs/5M_MI_ME模型改造方案.md`](docs/5M_MI_ME模型改造方案.md) — 参数预算与模块取舍
 - [`docs/基础模型直接验证协议.md`](docs/基础模型直接验证协议.md) — 验证入口与门禁
