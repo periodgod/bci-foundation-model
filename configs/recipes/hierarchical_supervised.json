@@ -1,0 +1,29 @@
+{
+  "model": {
+    "architecture": "hierarchical",
+    "sample_rate": 64,
+    "patch_samples": 32,
+    "dim": 24,
+    "depth": 1,
+    "heads": 4,
+    "local_patches": 3,
+    "latent_channels": 2,
+    "task": "classification",
+    "outputs": 2
+  },
+  "training": {
+    "objective": "supervised",
+    "epochs": 1,
+    "batch_size": 4,
+    "lr": 0.001,
+    "seed": 17,
+    "threads": 2,
+    "device": "cpu",
+    "max_seconds": 120,
+    "tuning": "full"
+  },
+  "labels": [
+    "synthetic_low_frequency",
+    "synthetic_high_frequency"
+  ]
+}

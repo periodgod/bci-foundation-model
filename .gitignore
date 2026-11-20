@@ -17,6 +17,7 @@ data/processed/
 data/downloads/
 **/checkpoints/
 **/outputs/
+experiments/revisions/
 **/cache/
 *.edf
 *.bdf
@@ -39,4 +40,4 @@ data/downloads/
 *.tmp
 *.part
 *.partial
-
+*.egg-info/

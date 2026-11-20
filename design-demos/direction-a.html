@@ -1,0 +1,515 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>OmniEEG Challenge 2026｜主赛道研究方案</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --acid: #d9ff00;
+      --ink: #11120c;
+      --paper: #f6f7ed;
+      --orange: #f4511e;
+      --line: rgba(17, 18, 12, .28);
+      --scale: 1;
+    }
+
+    * { box-sizing: border-box; }
+
+    html, body {
+      width: 100%;
+      height: 100%;
+      margin: 0;
+      overflow: hidden;
+      background: #171813;
+      color: var(--ink);
+      font-family: "Microsoft YaHei", "微软雅黑", "Noto Sans CJK SC", Arial, sans-serif;
+    }
+
+    .presentation {
+      width: 100vw;
+      height: 100vh;
+      display: grid;
+      place-items: center;
+    }
+
+    .slide {
+      position: absolute;
+      width: 1920px;
+      height: 1080px;
+      overflow: hidden;
+      transform: scale(var(--scale));
+      transform-origin: center center;
+      visibility: hidden;
+      opacity: 0;
+      pointer-events: none;
+    }
+
+    .slide.is-active {
+      visibility: visible;
+      opacity: 1;
+      pointer-events: auto;
+    }
+
+    .cover {
+      display: grid;
+      grid-template-rows: 160px 1fr 176px;
+      padding: 64px 78px 56px;
+      background: var(--acid);
+    }
+
+    .cover-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      border-bottom: 7px solid var(--ink);
+      padding: 0 0 27px;
+    }
+
+    .brand-lockup {
+      display: flex;
+      align-items: center;
+      gap: 32px;
+    }
+
+    .brand-lockup img {
+      display: block;
+      width: 224px;
+      height: auto;
+      object-fit: contain;
+    }
+
+    .event-name {
+      font-size: 34px;
+      font-weight: 800;
+      line-height: 1.2;
+    }
+
+    .cover-mark {
+      width: 172px;
+      height: 172px;
+      display: grid;
+      place-items: center;
+      margin-right: 24px;
+      border: 7px solid var(--ink);
+      border-radius: 50%;
+      background: var(--orange);
+      color: var(--ink);
+      font-size: 36px;
+      font-weight: 900;
+      line-height: 1;
+      transform: rotate(-8deg);
+    }
+
+    .cover-title-wrap {
+      display: flex;
+      align-items: center;
+      padding: 30px 0 36px;
+    }
+
+    .cover-title {
+      max-width: 1680px;
+      margin: 0;
+      font-size: 150px;
+      font-weight: 900;
+      line-height: 1.08;
+      letter-spacing: 0;
+    }
+
+    .cover-title .title-line { display: block; }
+
+    .cover-title .title-line:last-child {
+      width: max-content;
+      padding: 0 24px 12px 0;
+      border-bottom: 20px solid var(--orange);
+    }
+
+    .cover-foot {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 22px 0 0;
+      border-top: 7px solid var(--ink);
+    }
+
+    .track-label {
+      display: inline-flex;
+      align-items: center;
+      min-height: 96px;
+      padding: 0 34px;
+      background: var(--ink);
+      color: var(--acid);
+      font-size: 48px;
+      font-weight: 900;
+    }
+
+    .cover-index {
+      color: var(--ink);
+      font-size: 29px;
+      font-weight: 800;
+    }
+
+    .framework {
+      display: grid;
+      grid-template-rows: 218px 1fr 240px;
+      padding: 56px 70px 60px;
+      background: var(--acid);
+    }
+
+    .framework-head {
+      position: relative;
+      display: flex;
+      flex-direction: column;
+      justify-content: flex-end;
+      padding-bottom: 26px;
+      border-bottom: 7px solid var(--ink);
+    }
+
+    .framework-kicker {
+      margin: 0 0 8px;
+      font-size: 28px;
+      font-weight: 900;
+      line-height: 1.15;
+    }
+
+    .framework-title {
+      margin: 0;
+      font-size: 86px;
+      font-weight: 900;
+      line-height: 1.08;
+      letter-spacing: 0;
+    }
+
+    .framework-title span { color: var(--orange); }
+
+    .flow {
+      display: grid;
+      grid-template-columns: 270px 52px 318px 52px 598px 52px 368px;
+      align-items: center;
+      gap: 12px;
+      min-height: 0;
+      padding: 35px 0;
+    }
+
+    .flow-node {
+      position: relative;
+      height: 388px;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      padding: 27px 24px 28px;
+      background: var(--ink);
+      color: var(--paper);
+    }
+
+    .flow-node::before {
+      content: "";
+      position: absolute;
+      left: 0;
+      top: 0;
+      width: 100%;
+      height: 14px;
+      background: var(--orange);
+    }
+
+    .node-number {
+      margin: 0;
+      color: var(--acid);
+      font-size: 30px;
+      font-weight: 900;
+      line-height: 1;
+    }
+
+    .node-main {
+      margin: auto 0 0;
+      font-size: 45px;
+      font-weight: 900;
+      line-height: 1.18;
+    }
+
+    .node-copy {
+      margin: 17px 0 0;
+      font-size: 25px;
+      font-weight: 650;
+      line-height: 1.45;
+    }
+
+    .input-main { font-size: 41px; }
+
+    .flow-arrow {
+      width: 52px;
+      height: 20px;
+      position: relative;
+      background: var(--ink);
+    }
+
+    .flow-arrow::after {
+      content: "";
+      position: absolute;
+      right: -1px;
+      top: -10px;
+      width: 0;
+      height: 0;
+      border-top: 20px solid transparent;
+      border-bottom: 20px solid transparent;
+      border-left: 22px solid var(--ink);
+    }
+
+    .encoder-node {
+      padding: 27px 28px 26px;
+      background: var(--orange);
+      color: var(--ink);
+    }
+
+    .encoder-node::before { background: var(--ink); }
+    .encoder-node .node-number { color: var(--ink); }
+
+    .encoder-title {
+      margin: 22px 0 15px;
+      font-size: 37px;
+      font-weight: 900;
+      line-height: 1.22;
+    }
+
+    .encoder-pair {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      border-top: 4px solid var(--ink);
+      border-bottom: 4px solid var(--ink);
+    }
+
+    .encoder-pair div {
+      min-height: 91px;
+      display: flex;
+      align-items: center;
+      padding: 10px 14px;
+      font-size: 26px;
+      font-weight: 900;
+      line-height: 1.22;
+    }
+
+    .encoder-pair div + div { border-left: 4px solid var(--ink); }
+
+    .encoder-note {
+      margin: 15px 0 0;
+      font-size: 24px;
+      font-weight: 700;
+      line-height: 1.3;
+    }
+
+    .tasks {
+      display: grid;
+      grid-template-rows: 48px 1fr;
+      align-content: stretch;
+      padding-top: 22px;
+      border-top: 7px solid var(--ink);
+    }
+
+    .tasks-head {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+    }
+
+    .tasks-title {
+      margin: 0;
+      font-size: 34px;
+      font-weight: 900;
+      line-height: 1.2;
+    }
+
+    .tasks-note {
+      margin: 0;
+      font-size: 22px;
+      font-weight: 750;
+    }
+
+    .task-list {
+      display: grid;
+      grid-template-columns: repeat(7, 1fr);
+      gap: 8px;
+      padding-top: 16px;
+    }
+
+    .task {
+      min-width: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 12px 10px;
+      background: var(--ink);
+      color: var(--acid);
+      text-align: center;
+      font-size: 26px;
+      font-weight: 850;
+      line-height: 1.25;
+    }
+
+    .task:nth-child(even) {
+      background: var(--paper);
+      color: var(--ink);
+      box-shadow: inset 0 0 0 4px var(--ink);
+    }
+
+    .deck-nav {
+      position: fixed;
+      z-index: 10;
+      left: 50%;
+      bottom: 16px;
+      display: flex;
+      gap: 4px;
+      padding: 4px;
+      border: 1px solid rgba(255,255,255,.4);
+      background: var(--ink);
+      transform: translateX(-50%);
+    }
+
+    .deck-nav button {
+      min-height: 46px;
+      padding: 0 20px;
+      border: 0;
+      background: transparent;
+      color: var(--paper);
+      font: 700 20px/1 "Microsoft YaHei", "微软雅黑", Arial, sans-serif;
+      cursor: pointer;
+    }
+
+    .deck-nav button[aria-selected="true"] {
+      background: var(--acid);
+      color: var(--ink);
+    }
+
+    .deck-nav button:focus-visible {
+      outline: 3px solid var(--orange);
+      outline-offset: 2px;
+    }
+
+    @media (prefers-reduced-motion: no-preference) {
+      .slide { transition: opacity 140ms ease; }
+    }
+  </style>
+</head>
+<body>
+  <main class="presentation" aria-label="OmniEEG Challenge 2026 主赛道研究方案">
+    <section class="slide cover is-active" id="cover" aria-labelledby="cover-title" aria-hidden="false">
+      <header class="cover-head">
+        <div class="brand-lockup">
+          <img src="./assets/omnieeg-mark.png" alt="OmniEEG Challenge 2026 官方赛事标志">
+          <div class="event-name">OmniEEG Challenge 2026</div>
+        </div>
+        <div class="cover-mark" aria-hidden="true">EEG</div>
+      </header>
+      <div class="cover-title-wrap">
+        <h1 class="cover-title" id="cover-title">
+          <span class="title-line">共享 EEG 表征</span>
+          <span class="title-line">能否迁移至七类任务？</span>
+        </h1>
+      </div>
+      <footer class="cover-foot">
+        <div class="track-label">主赛道</div>
+        <div class="cover-index">OmniEEG Challenge 2026</div>
+      </footer>
+    </section>
+
+    <section class="slide framework" id="framework" aria-labelledby="framework-title" aria-hidden="true">
+      <header class="framework-head">
+        <p class="framework-kicker">主赛道｜研究方法</p>
+        <h2 class="framework-title" id="framework-title">从统一输入到<span>七类任务评测</span></h2>
+      </header>
+      <div class="flow" aria-label="总体方法流程">
+        <article class="flow-node">
+          <p class="node-number">01 / 语料核查</p>
+          <div>
+            <p class="node-main">21 个<br>预训练语料</p>
+            <p class="node-copy">逐项核查许可<br>核对被试信息</p>
+          </div>
+        </article>
+        <div class="flow-arrow" aria-hidden="true"></div>
+        <article class="flow-node">
+          <p class="node-number">02 / 统一输入</p>
+          <div>
+            <p class="node-main input-main">4–128 通道<br>1–30 秒</p>
+            <p class="node-copy">统一重采样至 200 Hz</p>
+          </div>
+        </article>
+        <div class="flow-arrow" aria-hidden="true"></div>
+        <article class="flow-node encoder-node">
+          <p class="node-number">03 / 共享表征</p>
+          <div>
+            <p class="encoder-title">随机初始化<br>掩码预训练</p>
+            <div class="encoder-pair">
+              <div>共享通道<br>编码</div>
+              <div>分层时间<br>编码</div>
+            </div>
+            <p class="encoder-note">适配不同通道数与窗口长度</p>
+          </div>
+        </article>
+        <div class="flow-arrow" aria-hidden="true"></div>
+        <article class="flow-node">
+          <p class="node-number">04 / 下游适配</p>
+          <div>
+            <p class="node-main">14 个<br>下游数据集</p>
+            <p class="node-copy">任务特性输出头<br>按赛道积分累计评价</p>
+          </div>
+        </article>
+      </div>
+      <section class="tasks" aria-labelledby="tasks-title">
+        <div class="tasks-head">
+          <h3 class="tasks-title" id="tasks-title">七类任务评测</h3>
+          <p class="tasks-note">共享表征迁移能力的检验范围</p>
+        </div>
+        <div class="task-list">
+          <div class="task">信号可靠性</div>
+          <div class="task">疾病诊断</div>
+          <div class="task">睡眠分期</div>
+          <div class="task">认知与情绪识别</div>
+          <div class="task">自然刺激解码</div>
+          <div class="task">运动想象</div>
+          <div class="task">SSVEP</div>
+        </div>
+      </section>
+    </section>
+  </main>
+
+  <nav class="deck-nav" role="tablist" aria-label="页面切换">
+    <button type="button" role="tab" id="tab-cover" aria-controls="cover" aria-selected="true">封面</button>
+    <button type="button" role="tab" id="tab-framework" aria-controls="framework" aria-selected="false">总体方法框架</button>
+  </nav>
+
+  <script>
+    (() => {
+      const slides = [...document.querySelectorAll(".slide")];
+      const tabs = [...document.querySelectorAll(".deck-nav [role='tab']")];
+      let activeIndex = 0;
+
+      function fitCanvas() {
+        const scale = Math.min((innerWidth - 24) / 1920, (innerHeight - 76) / 1080);
+        document.documentElement.style.setProperty("--scale", String(Math.max(0.12, scale)));
+      }
+
+      function showSlide(index) {
+        activeIndex = (index + slides.length) % slides.length;
+        slides.forEach((slide, i) => {
+          const active = i === activeIndex;
+          slide.classList.toggle("is-active", active);
+          slide.setAttribute("aria-hidden", String(!active));
+        });
+        tabs.forEach((tab, i) => {
+          tab.setAttribute("aria-selected", String(i === activeIndex));
+          tab.tabIndex = i === activeIndex ? 0 : -1;
+        });
+      }
+
+      tabs.forEach((tab, i) => tab.addEventListener("click", () => showSlide(i)));
+      addEventListener("resize", fitCanvas);
+      addEventListener("keydown", (event) => {
+        if (event.key === "ArrowRight" || event.key === "ArrowDown") showSlide(activeIndex + 1);
+        if (event.key === "ArrowLeft" || event.key === "ArrowUp") showSlide(activeIndex - 1);
+      });
+      fitCanvas();
+      showSlide(0);
+    })();
+  </script>
+</body>
+</html>

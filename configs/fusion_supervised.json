@@ -1,0 +1,12 @@
+{
+  "model": {
+    "architecture": "fusion", "sample_rate": 64, "patch_samples": 32,
+    "dim": 48, "depth": 2, "heads": 4, "task": "classification", "outputs": 2
+  },
+  "labels": ["synthetic_low_frequency", "synthetic_high_frequency"],
+  "training": {
+    "objective": "supervised", "epochs": 2, "batch_size": 4,
+    "lr": 0.001, "weight_decay": 0.01, "seed": 17, "device": "cpu", "threads": 2,
+    "tuning": "full", "max_seconds": 120, "selection_metric": "balanced_accuracy", "direction": "max"
+  }
+}

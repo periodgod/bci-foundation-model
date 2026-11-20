@@ -1,0 +1,301 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>OmniEEG Challenge 2026｜主赛道方案</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --ink: #17212b;
+      --muted: #56616a;
+      --line: #cbd1d4;
+      --soft: #eef1f1;
+      --orange: #e66b2e;
+      --orange-pale: #f7e8de;
+      --paper: #fff;
+      --green: #24786d;
+    }
+    * { box-sizing: border-box; }
+    html, body { width: 100%; height: 100%; margin: 0; overflow: hidden; background: #f3f4f2; }
+    body {
+      color: var(--ink);
+      font-family: "Microsoft YaHei UI", "Microsoft YaHei", "Noto Sans CJK SC", "PingFang SC", sans-serif;
+      text-rendering: geometricPrecision;
+    }
+    #deck { width: 1920px; height: 1080px; position: absolute; inset: 50% auto auto 50%; transform-origin: center; }
+    .slide {
+      width: 1920px;
+      height: 1080px;
+      position: absolute;
+      inset: 0;
+      overflow: hidden;
+      padding: 64px 88px 74px;
+      background: var(--paper);
+      opacity: 0;
+      visibility: hidden;
+      transition: opacity 180ms ease;
+    }
+    .slide.active { opacity: 1; visibility: visible; }
+    .brandline { display: flex; align-items: center; gap: 24px; height: 72px; }
+    .brandline img { width: 72px; height: 72px; object-fit: contain; }
+    .brandline span { font-size: 25px; font-weight: 650; letter-spacing: 0; }
+    .track {
+      position: absolute;
+      top: 73px;
+      right: 88px;
+      border-left: 4px solid var(--orange);
+      padding: 6px 0 6px 17px;
+      font-size: 24px;
+      font-weight: 700;
+    }
+    h1, h2, p { margin: 0; }
+    h1 { font-weight: 750; letter-spacing: 0; }
+    .cover h1 {
+      position: absolute;
+      left: 104px;
+      top: 230px;
+      width: 680px;
+      font-size: 66px;
+      line-height: 1.34;
+    }
+    .cover h1 em { color: var(--orange); font-style: normal; }
+    .cover .rule {
+      position: absolute;
+      left: 106px;
+      top: 628px;
+      width: 120px;
+      height: 8px;
+      background: var(--orange);
+    }
+    .cover .claim-note {
+      position: absolute;
+      left: 106px;
+      top: 663px;
+      width: 610px;
+      font-size: 25px;
+      line-height: 1.65;
+      color: var(--muted);
+    }
+    .cover-figure {
+      position: absolute;
+      right: 94px;
+      top: 185px;
+      width: 1010px;
+      height: 748px;
+    }
+    .cover-figure svg { width: 100%; height: 100%; overflow: visible; }
+    .framework h1 {
+      position: absolute;
+      left: 92px;
+      top: 147px;
+      width: 1600px;
+      font-size: 48px;
+      line-height: 1.3;
+    }
+    .framework .subline {
+      position: absolute;
+      left: 95px;
+      top: 218px;
+      font-size: 23px;
+      color: var(--muted);
+      line-height: 1.4;
+    }
+    .method-figure {
+      position: absolute;
+      left: 88px;
+      top: 305px;
+      width: 1744px;
+      height: 630px;
+    }
+    .method-figure svg { width: 100%; height: 100%; }
+    .bottom-note {
+      position: absolute;
+      left: 95px;
+      bottom: 78px;
+      font-size: 21px;
+      color: var(--muted);
+    }
+    .controls {
+      position: fixed;
+      z-index: 10;
+      right: 30px;
+      bottom: 22px;
+      display: flex;
+      gap: 10px;
+    }
+    .controls button {
+      width: 54px;
+      height: 54px;
+      border: 1px solid #9aa2a5;
+      background: #fff;
+      color: var(--ink);
+      border-radius: 2px;
+      font-family: inherit;
+      font-size: 30px;
+      line-height: 1;
+      cursor: pointer;
+    }
+    .controls button:hover, .controls button:focus-visible { border-color: var(--orange); color: var(--orange); outline: 2px solid var(--orange-pale); }
+    svg text { font-family: "Microsoft YaHei UI", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif; fill: var(--ink); }
+  </style>
+</head>
+<body>
+  <main id="deck" aria-label="OmniEEG Challenge 2026 主赛道研究方案">
+    <section class="slide cover active" aria-label="封面">
+      <div class="brandline">
+        <img src="assets/omnieeg-mark.png" alt="OmniEEG 官方赛事标志">
+        <span>OmniEEG Challenge 2026</span>
+      </div>
+      <div class="track">主赛道</div>
+      <h1>检验共享 EEG 表征<br>能否迁移到<em>七类任务</em></h1>
+      <div class="rule"></div>
+      <p class="claim-note">从随机初始化开始训练，并按各赛道积分累计评价总体能力。</p>
+      <figure class="cover-figure" aria-label="共享 EEG 表征连接七类下游任务">
+        <svg viewBox="0 0 1010 748" role="img">
+          <defs>
+            <marker id="arrow-cover" markerWidth="11" markerHeight="11" refX="8" refY="5.5" orient="auto">
+              <path d="M0,0 L10,5.5 L0,11 Z" fill="#e66b2e"/>
+            </marker>
+          </defs>
+          <path d="M65 359 H222" fill="none" stroke="#17212b" stroke-width="3"/>
+          <path d="M92 338 C118 338 118 382 144 382 S170 338 196 338" fill="none" stroke="#e66b2e" stroke-width="5"/>
+          <text x="65" y="426" font-size="23" fill="#56616a">脑电信号</text>
+          <path d="M222 359 H338" fill="none" stroke="#e66b2e" stroke-width="5" marker-end="url(#arrow-cover)"/>
+          <circle cx="490" cy="359" r="151" fill="#fff" stroke="#17212b" stroke-width="3"/>
+          <circle cx="490" cy="359" r="128" fill="none" stroke="#cbd1d4" stroke-width="2" stroke-dasharray="5 10"/>
+          <path d="M425 359 C444 359 447 321 466 321 S487 397 508 397 S532 337 552 337" fill="none" stroke="#e66b2e" stroke-width="6"/>
+          <text x="490" y="285" text-anchor="middle" font-size="23" fill="#56616a">随机初始化训练</text>
+          <text x="490" y="457" text-anchor="middle" font-size="31" font-weight="700">共享 EEG 表征</text>
+          <path d="M641 359 H718" fill="none" stroke="#e66b2e" stroke-width="5"/>
+          <circle cx="718" cy="359" r="7" fill="#e66b2e"/>
+          <path d="M718 359 C758 359 760 142 816 142 H948 M718 359 C758 359 760 245 816 245 H948 M718 359 C758 359 760 348 816 348 H948 M718 359 C758 359 760 451 816 451 H948 M718 359 C758 359 760 554 816 554 H948 M718 359 C758 359 760 657 816 657 H948" fill="none" stroke="#aab2b5" stroke-width="2.5"/>
+          <path d="M718 359 C758 359 760 142 816 142 H948 M718 359 C758 359 760 245 816 245 H948 M718 359 C758 359 760 348 816 348 H948 M718 359 C758 359 760 451 816 451 H948 M718 359 C758 359 760 554 816 554 H948 M718 359 C758 359 760 657 816 657 H948" fill="none" stroke="#e66b2e" stroke-width="0"/>
+          <g font-size="24">
+            <text x="950" y="150" text-anchor="end">信号可靠性</text>
+            <text x="950" y="253" text-anchor="end">疾病诊断</text>
+            <text x="950" y="356" text-anchor="end">睡眠分期</text>
+            <text x="950" y="459" text-anchor="end">认知与情绪识别</text>
+            <text x="950" y="562" text-anchor="end">自然刺激解码</text>
+            <text x="950" y="665" text-anchor="end">运动想象与 SSVEP</text>
+          </g>
+          <g fill="#e66b2e">
+            <circle cx="948" cy="142" r="5"/><circle cx="948" cy="245" r="5"/><circle cx="948" cy="348" r="5"/>
+            <circle cx="948" cy="451" r="5"/><circle cx="948" cy="554" r="5"/><circle cx="948" cy="657" r="5"/>
+          </g>
+          <path d="M816 142 H948 M816 245 H948 M816 348 H948 M816 451 H948 M816 554 H948 M816 657 H948" stroke="#e66b2e" stroke-width="3"/>
+          <text x="720" y="727" text-anchor="middle" font-size="21" fill="#56616a">主赛道覆盖全部七个分赛道</text>
+        </svg>
+      </figure>
+    </section>
+
+    <section class="slide framework" aria-label="总体方法框架">
+      <div class="brandline">
+        <img src="assets/omnieeg-mark.png" alt="OmniEEG 官方赛事标志">
+        <span>OmniEEG Challenge 2026</span>
+      </div>
+      <div class="track">主赛道</div>
+      <h1>统一输入与变长编码，把共享表征送入七类任务独立评测</h1>
+      <p class="subline">方案流程：从官方语料核查到 14 个下游数据集适配；不代表已完成 OmniEEG 实测。</p>
+      <figure class="method-figure" aria-label="官方预训练语料至七类任务评测的方法流程图">
+        <svg viewBox="0 0 1744 630" role="img">
+          <defs>
+            <marker id="arrow-method" markerWidth="12" markerHeight="12" refX="9" refY="6" orient="auto">
+              <path d="M0,0 L11,6 L0,12 Z" fill="#e66b2e"/>
+            </marker>
+          </defs>
+          <path d="M78 225 H1664" fill="none" stroke="#cbd1d4" stroke-width="4"/>
+          <path d="M78 225 H1664" fill="none" stroke="#e66b2e" stroke-width="4" marker-end="url(#arrow-method)"/>
+
+          <g transform="translate(64 75)">
+            <text x="0" y="0" font-size="22" font-weight="700" fill="#e66b2e">语料与治理</text>
+            <text x="0" y="59" font-size="36" font-weight="700">21 个</text>
+            <text x="0" y="96" font-size="25">官方预训练语料</text>
+            <text x="0" y="135" font-size="21" fill="#56616a">逐项核查许可与被试</text>
+            <circle cx="12" cy="150" r="8" fill="#e66b2e" transform="translate(0 75)"/>
+          </g>
+
+          <g transform="translate(334 75)">
+            <text x="0" y="0" font-size="22" font-weight="700" fill="#e66b2e">统一输入</text>
+            <text x="0" y="59" font-size="36" font-weight="700">200 Hz</text>
+            <text x="0" y="96" font-size="25">统一重采样</text>
+            <text x="0" y="135" font-size="21" fill="#56616a">4–128 通道 · 1–30 秒</text>
+            <circle cx="12" cy="225" r="8" fill="#e66b2e"/>
+          </g>
+
+          <g transform="translate(608 75)">
+            <text x="0" y="0" font-size="22" font-weight="700" fill="#e66b2e">共享编码</text>
+            <text x="0" y="59" font-size="34" font-weight="700">通道共享编码</text>
+            <text x="0" y="101" font-size="28" font-weight="700">+ 分层时间编码</text>
+            <text x="0" y="143" font-size="21" fill="#56616a">适应通道数与窗口变化</text>
+            <circle cx="12" cy="225" r="8" fill="#e66b2e"/>
+          </g>
+
+          <g transform="translate(914 75)">
+            <text x="0" y="0" font-size="22" font-weight="700" fill="#e66b2e">预训练</text>
+            <text x="0" y="59" font-size="34" font-weight="700">随机初始化</text>
+            <text x="0" y="101" font-size="28" font-weight="700">掩码预训练</text>
+            <text x="0" y="143" font-size="21" fill="#56616a">从头学习共享表征</text>
+            <circle cx="12" cy="225" r="8" fill="#e66b2e"/>
+          </g>
+
+          <g transform="translate(1190 75)">
+            <text x="0" y="0" font-size="22" font-weight="700" fill="#e66b2e">下游适配</text>
+            <text x="0" y="59" font-size="36" font-weight="700">14 个</text>
+            <text x="0" y="96" font-size="25">下游数据集</text>
+            <text x="0" y="135" font-size="21" fill="#56616a">任务输出头保留任务特性</text>
+            <circle cx="12" cy="225" r="8" fill="#e66b2e"/>
+          </g>
+
+          <g transform="translate(1460 75)">
+            <text x="0" y="0" font-size="22" font-weight="700" fill="#e66b2e">统一评价</text>
+            <text x="0" y="59" font-size="34" font-weight="700">七类任务</text>
+            <text x="0" y="101" font-size="28" font-weight="700">积分累计</text>
+            <text x="0" y="143" font-size="21" fill="#56616a">评价总体迁移能力</text>
+            <circle cx="12" cy="225" r="8" fill="#e66b2e"/>
+          </g>
+
+          <path d="M615 384 H1662" stroke="#cbd1d4" stroke-width="2"/>
+          <text x="615" y="426" font-size="21" font-weight="700" fill="#24786d">设计取舍待消融验证</text>
+          <text x="615" y="471" font-size="22">是否保留频带或拓扑先验：通过消融决定，不预设收益</text>
+          <text x="615" y="524" font-size="21" fill="#56616a">方法参数尚未确定时，按官方资源规格与首轮短测确认。</text>
+
+          <g transform="translate(58 375)">
+            <path d="M0 0 H476 V180 H0" fill="none" stroke="#17212b" stroke-width="2"/>
+            <text x="24" y="42" font-size="22" font-weight="700">赛段边界</text>
+            <text x="24" y="88" font-size="22">复赛：允许公开下载的权重用于微调、</text>
+            <text x="24" y="122" font-size="22">线性探测或适配器实验</text>
+            <text x="24" y="163" font-size="22">决赛：官方语料从零训练，禁止加载预训练权重</text>
+          </g>
+        </svg>
+      </figure>
+      <p class="bottom-note">架构主张：共享通道编码与分层时间编码；任务输出头保留各自任务特性。</p>
+    </section>
+  </main>
+  <nav class="controls" aria-label="页面切换">
+    <button type="button" aria-label="上一页" title="上一页" id="previous">‹</button>
+    <button type="button" aria-label="下一页" title="下一页" id="next">›</button>
+  </nav>
+  <script>
+    const deck = document.getElementById("deck");
+    const slides = [...document.querySelectorAll(".slide")];
+    let current = 0;
+    function fitDeck() {
+      const scale = Math.min(window.innerWidth / 1920, window.innerHeight / 1080);
+      deck.style.transform = `translate(-50%, -50%) scale(${scale})`;
+    }
+    function showSlide(index) {
+      current = (index + slides.length) % slides.length;
+      slides.forEach((slide, i) => slide.classList.toggle("active", i === current));
+    }
+    document.getElementById("previous").addEventListener("click", () => showSlide(current - 1));
+    document.getElementById("next").addEventListener("click", () => showSlide(current + 1));
+    window.addEventListener("resize", fitDeck);
+    window.addEventListener("keydown", event => {
+      if (event.key === "ArrowRight" || event.key === "PageDown") showSlide(current + 1);
+      if (event.key === "ArrowLeft" || event.key === "PageUp") showSlide(current - 1);
+    });
+    fitDeck();
+  </script>
+</body>
+</html>

@@ -1,82 +1,76 @@
-# 脑电大模型
+# 脑电与时序基础模型：赛前代码准备
 
-目标：建设一个面向脑机接口和脑电智能分析的 EEG foundation model 项目。第一阶段收敛为 **5M 以下 MI+ME 脑电基础模型**，优先服务运动想象、运动执行和自采 8 分类 MI+ME 极少样本快速适配任务。
+目前准备的是可运行、可替换、可验证的研究底座。用户提供的赛事公告已明确七赛道、2–3 人组队、复赛官方基座微调和决赛从零预训练；具体数据、指标、许可和部署限制仍待正式规则确认。运动想象与睡眠已各扩展到10名被试，并直接验证约4.91M参数的自研融合候选；真实数据与代码通过不等于基础模型泛化优势成立。本项目候选不是 CBraMod、EEGPT、LUNA 等论文的完整复刻。
 
-本项目原则：**训练之前，先把数据、任务、架构、评估、伦理、算力和文档问题逐项解决清楚。**
+**执行规范：[赛前代码底座与剪枝树](docs/赛前代码底座与剪枝树.md)**。
 
-## 当前架构决策
+按用户最新要求，当前以[基础模型直接验证协议](docs/基础模型直接验证协议.md)为研发入口，暂停新增普通模型对照。[七赛道接入边界](docs/七赛道接入与研发验收边界.md)逐项记录已实现能力与待接入内容。
 
-第一版采用 **Balanced Signed Graph Algorithm Unrolling** 风格的轻量 EEG Transformer：
+最新[直接研发验收](reports/基础模型直接研发验收.md)：69个完整真实数据研究运行已核验源码与检查点；三种子MI直接训练BA51.72%、掩码全量微调51.37%，睡眠对应67.17%/69.18%。同一联合预训练基座完成两个任务的full/linear迁移。代码可运行，通用基础模型收益仍未成立。
 
-- 输入：多通道 EEG 连续片段。
-- tokenizer：每个通道按 0.5 秒切成 patch，融合 raw waveform 与 mu/beta bandpower。
-- 位置编码：时间位置编码 + 通道编码。
-- 主干：6 层 BGL + LPF 算法展开块，用平衡符号图学习通道关系并做低通图滤波，不使用 multi-head attention。
-- 预训练：masked channel-time reconstruction，加入频谱和 bandpower 约束。
-- 微调：MI/ME 状态头、身体部位头、8 分类联合头。
+| 模块 | 已实现 |
+|---|---|
+| 数据 | NPZ/JSON 账本、真实通道身份、可变长度与通道、分组审计、哈希、训练统计 |
+| 编码器 | 波形频谱融合、时空分解、轻量卷积、潜在通道、长序列分层、因果 GRU |
+| 输出 | 窗口分类/回归、patch 序列分类/回归、重建与频带目标 |
+| 训练 | 监督、掩码重建/频谱/频带、EMA、双视图对比、多教师特征/同标签输出蒸馏；训练标签频率权重 |
+| 适配 | 从头训练、编码器初始化、全量微调、线性探测、残差 adapter、试次级少样本 |
+| 验证 | 预测与元数据、主体汇总、测试访问账本、因果参考推理、批次资源测量 |
+| 复现 | 配置/源码/数据哈希、环境、日志、检查点、epoch 边界恢复、上游训练与模型选择来源链 |
+| 剪枝 | 规则/资源约束、配对验证收益与主体 bootstrap、关键任务保护；缺证据保持待验证 |
 
-不在第一版采用大型 VQ tokenizer 或生成式 decoder，先把数据、预训练、评估闭环跑通。
+## Windows 启动
 
-## 推荐第一阶段规格
-
-| 项目 | 建议 |
-| --- | --- |
-| 参数量 | 主模型 1,393,642 参数，低于 5M 预算 |
-| 输入长度 | 4 秒 |
-| 采样率 | 160 Hz，优先贴合 PhysioNet 原生采样率 |
-| 通道数 | 64，支持 channel mask |
-| patch 长度 | 0.5 秒 |
-| token 数 | 64 通道 x 8 时间片 = 512 tokens |
-| 预训练数据 | PhysioNet Motor Movement/Imagery |
-| mask 比例 | 默认 55% channel-time patches |
-| 损失 | raw MSE + spectral loss + bandpower loss |
-
-## 文件
-
-- `docs/基础说明.md`：项目基础说明，先作为全项目共识文档。
-- `docs/训练前问题清单.md`：训练前必须解决的问题和决策状态。
-- `docs/5M_MI_ME模型改造方案.md`：BSG 轻量 MI+ME 架构改造说明。
-- `docs/完整实验方案.md`：从数据到账本、baseline、预训练、微调、画图和报告的完整流程。
-- `docs/architecture.md`：架构细节。
-- `docs/roadmap.md`：第一阶段路线。
-- `configs/model_5m_mime.yaml`：BSG 轻量 MI+ME 默认模型配置。
-- `configs/model_10m.yaml`：默认模型配置。
-- `src/eeg_mime_foundation/model.py`：BSG unrolled MI+ME PyTorch 模型骨架。
-- `data/README.md`：数据账本字段。
-- `experiments/README.md`：每次实验目录格式。
-- `results/README.md`：结果表保存规范。
-- `figures/README.md`：图表保存规范。
-- `reports/README.md`：报告和模型卡保存规范。
-
-## 当前阶段
-
-现在处于 **BSG 轻量 MI+ME 模型改造与预训练准备阶段**。
-
-## 快速检查
+本机已验证 Python 3.12、PyTorch 2.6.0+cu124、NumPy 2.5.3。使用现有依赖及标准库 unittest。
 
 ```powershell
-pip install -e .
-python scripts/count_5m_model_params.py
+py -3.12 -m pip install -e . --no-deps --no-build-isolation
+py -3.12 -X utf8 -m unittest discover -s tests -v
+py -3.12 -X utf8 -m eeg_mime_foundation.cli smoke --output experiments/outputs/my-smoke
 ```
 
-期望输出：
+新运行使用新目录。smoke 只用小模型和合成数据检查接口，不据其分数选择比赛方案。
 
-```text
-total_parameters=1,393,642
-trainable_parameters=1,393,642
+直接验证真实尺寸的自研候选：
+
+```powershell
+py -3.12 -X utf8 scripts/validate_foundation.py --dataset mi --manifest data/processed/precheck/mi-development-v1/manifest.json --output experiments/outputs/my-foundation-mi
+py -3.12 -X utf8 scripts/validate_foundation.py --dataset sleep --manifest data/processed/precheck/sleep-development-v1/manifest.json --output experiments/outputs/my-foundation-sleep
 ```
 
-进入正式训练前，必须完成：
+```powershell
+py -3.12 -X utf8 -m eeg_mime_foundation.cli synthetic --output data/processed/diagnostic
+py -3.12 -X utf8 -m eeg_mime_foundation.cli train --config configs/fusion_masked.json --manifest data/processed/diagnostic/manifest.json --output experiments/outputs/masked
+py -3.12 -X utf8 -m eeg_mime_foundation.cli train --config configs/fusion_supervised.json --manifest data/processed/diagnostic/manifest.json --initialize experiments/outputs/masked/best.pt --output experiments/outputs/finetuned
+py -3.12 -X utf8 -m eeg_mime_foundation.cli evaluate --checkpoint experiments/outputs/finetuned/best.pt --manifest data/processed/diagnostic/manifest.json --split validation --output experiments/outputs/finetuned-validation
+py -3.12 -X utf8 -m eeg_mime_foundation.cli decide --evidence configs/decision_pending.json --output experiments/outputs/decision.json
+```
 
-1. 数据账本。
-2. 数据许可与隐私确认。
-3. 预处理规范。
-4. 模型输入规范。
-5. 训练目标与损失设计。
-6. 下游评估协议。
-7. baseline 结果。
-8. 算力与训练预算。
-9. 实验记录与复现规范。
-10. 风险清单和终止条件。
+## 模型讲解动画
 
-当前执行顺序以 `docs/完整实验方案.md` 为准。没有完成数据账本、传统 baseline 和 1M-2M sanity model 前，不启动主模型正式预训练。
+后续动画统一使用 Remotion；可编辑工程、中文旁白和导出说明见 [animations/README.md](animations/README.md)。
+
+```powershell
+cd animations
+npm.cmd ci
+npm.cmd run narrate
+npm.cmd run studio
+# 导出 1080p 中文讲解视频
+npm.cmd run render
+```
+
+## 文档
+
+- [代码底座与剪枝树](docs/赛前代码底座与剪枝树.md)：接口、配方、决策条件、开赛修改顺序。
+- [工程验收记录](reports/赛前代码工程验收.md)：测试结果与限制。
+- [真实数据闭环验收](reports/运动想象与睡眠真实数据闭环验收.md)：下载/原始标签、领域基线、训练验证、资源、睡眠 N1 缺口与测试访问范围。
+- [全局技能一致性检查](reports/全局技能一致性检查.md)：49 个相关入口检查、8 个技能修订与项目状态对齐。
+- [赛事公告与真实数据验证计划](docs/赛事公告与赛前真实数据验证计划.md)：两阶段权重约束、七赛道缺口、最小数据清单与初赛前安排。
+- [时序与 EEG 融合预案](docs/时序与EEG融合架构及赛前总预案.md)：S0–S7。
+- [文献地图与模块替换](docs/赛前文献地图与模块替换计划.md)。
+- [多教师与任务迁移](docs/多教师蒸馏与任务迁移方案.md)。
+- [跨领域时序参考](docs/跨领域时序参考与架构预案.md)。
+- [赛前流程规范](docs/赛前准备流程规范.md)、[记录模板](docs/赛前准备记录模板.md)、[技能更新报告](docs/技能更新与验证报告.md)。
+- [OmniEEG 初期盘点](docs/OmniEEG基础模型全流程设计.md)：代码状态以本 README 为准。
+
+旧 BSG 原型、固定输入 YAML 和参数统计脚本已删除，没有兼容别名。之前的 BSG/MI 设计保留为历史证据，不能作为当前运行规范。真实数据预检使用 [数据账本](data/README.md) 中的限定导入流程与领域基线。外部官方模型原生输入适配、优化流式缓存、未知任务识别和官方提交封装仍需实际任务确定后实施。

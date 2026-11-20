@@ -1,259 +1,264 @@
-from __future__ import annotations
-
-from dataclasses import dataclass
-from typing import Dict, Optional, Tuple
+"""Small, replaceable EEG/time-series encoders, not paper reproductions."""
+from dataclasses import asdict, dataclass
+import math
 
 import torch
-from torch import Tensor, nn
-import torch.nn.functional as F
+from torch import nn
+from torch.nn import functional as F
+
+from .data import Batch
 
 
 @dataclass
-class BSGMIMEConfig:
-    input_seconds: float = 4.0
-    sampling_rate: int = 160
-    max_channels: int = 64
-    patch_seconds: float = 0.5
-    patch_stride_seconds: float = 0.5
-    d_model: int = 192
-    depth: int = 6
-    mlp_ratio: int = 2
-    graph_topk: int = 12
-    propagation_steps: int = 3
-    dropout: float = 0.1
-    state_classes: int = 2
-    body_classes: int = 4
-    joint_classes: int = 8
+class ModelConfig:
+    architecture: str = "fusion"
+    sample_rate: int = 64
+    patch_samples: int = 32
+    dim: int = 48
+    depth: int = 2
+    heads: int = 4
+    mlp_ratio: int = 3
+    dropout: float = 0.0
+    channel_vocab: int = 128
+    latent_channels: int = 4
+    local_patches: int = 8
+    adapter_dim: int = 12
+    task: str = "classification"
+    outputs: int = 2
+    bands: tuple = ((1., 4.), (4., 8.), (8., 13.), (13., 30.))
 
-    @property
-    def input_samples(self) -> int:
-        return int(round(self.input_seconds * self.sampling_rate))
-
-    @property
-    def patch_samples(self) -> int:
-        return int(round(self.patch_seconds * self.sampling_rate))
-
-    @property
-    def patch_stride_samples(self) -> int:
-        return int(round(self.patch_stride_seconds * self.sampling_rate))
-
-    @property
-    def num_time_patches(self) -> int:
-        return 1 + (self.input_samples - self.patch_samples) // self.patch_stride_samples
+    def __post_init__(self):
+        if self.architecture not in {"fusion", "factorized", "compact", "latent", "hierarchical", "causal"}:
+            raise ValueError("Unknown architecture")
+        if min(self.sample_rate, self.patch_samples, self.dim, self.depth, self.heads,
+               self.channel_vocab, self.latent_channels, self.local_patches, self.adapter_dim, self.outputs) <= 0:
+            raise ValueError("Model dimensions must be positive")
+        if self.dim % self.heads or self.patch_samples < 4 or not 0 <= self.dropout < 1:
+            raise ValueError("Invalid head/patch/dropout setting")
+        if self.task not in {"classification", "regression", "sequence_classification", "sequence_regression"}:
+            raise ValueError("Unknown task head")
+        if not self.bands or any(not 0 <= lo < hi <= self.sample_rate / 2 for lo, hi in self.bands):
+            raise ValueError("Frequency bands must be within Nyquist")
 
 
-MIMEModelConfig = BSGMIMEConfig
+def patchify(batch: Batch, size: int):
+    if batch.x.ndim != 3 or batch.valid.shape != batch.x.shape:
+        raise ValueError("Expected signal/validity [B,C,T]")
+    if not batch.valid.flatten(1).any(1).all():
+        raise ValueError("All-invalid sample")
+    if ((~batch.valid[..., :-1]) & batch.valid[..., 1:]).any():
+        raise ValueError("Validity must be right padding; artifact gaps require separate segments")
+    if not torch.isfinite(batch.x[batch.valid]).all():
+        raise ValueError("Non-finite valid input")
+    extra = (-batch.x.shape[-1]) % size
+    x = F.pad(batch.x.masked_fill(~batch.valid, 0), (0, extra)).unfold(-1, size, size)
+    valid = F.pad(batch.valid, (0, extra)).unfold(-1, size, size)
+    return x, valid
 
 
-class BandAwarePatchEmbedding(nn.Module):
-    """Raw patch projection plus fixed mu/beta bandpower cues for MI/ME."""
+def time_position(patches, dim, device, dtype, patch_seconds):
+    t = torch.arange(patches, device=device, dtype=dtype) * patch_seconds
+    f = torch.exp(torch.arange(0, dim, 2, device=device, dtype=dtype) * (-math.log(10000) / dim))
+    phase = t[:, None] * f[None]
+    position = torch.zeros(patches, dim, device=device, dtype=dtype)
+    position[:, 0::2] = phase.sin()
+    position[:, 1::2] = phase[:, :dim // 2].cos()
+    return position
 
-    def __init__(self, config: BSGMIMEConfig) -> None:
+
+def attention(module, query, source, key_valid, query_valid, causal=False):
+    """Do not send all-masked rows through softmax. Zero invalid query outputs."""
+    good = key_valid.any(-1)
+    result = torch.zeros_like(query)
+    if good.any():
+        mask = None
+        if causal:
+            if query.shape[1] != source.shape[1]:
+                raise ValueError("Causal attention requires matching time axes")
+            mask = torch.ones(query.shape[1], source.shape[1], dtype=torch.bool,
+                              device=query.device).triu(1)
+        attended, _ = module(query[good], source[good], source[good],
+                             key_padding_mask=~key_valid[good], attn_mask=mask, need_weights=False)
+        result[good] = attended
+    return result.masked_fill(~query_valid[..., None], 0)
+
+
+class FactorBlock(nn.Module):
+    def __init__(self, cfg):
         super().__init__()
-        self.config = config
-        self.raw_projection = nn.Linear(config.patch_samples, config.d_model)
-        self.band_projection = nn.Linear(3, config.d_model)
-        self.norm = nn.LayerNorm(config.d_model)
+        self.temporal = nn.MultiheadAttention(cfg.dim, cfg.heads, cfg.dropout, batch_first=True)
+        self.spatial = nn.MultiheadAttention(cfg.dim, cfg.heads, cfg.dropout, batch_first=True)
+        self.norms = nn.ModuleList([nn.LayerNorm(cfg.dim) for _ in range(3)])
+        self.ff = nn.Sequential(nn.Linear(cfg.dim, cfg.dim * cfg.mlp_ratio), nn.GELU(),
+                                nn.Dropout(cfg.dropout), nn.Linear(cfg.dim * cfg.mlp_ratio, cfg.dim))
 
-    def forward(self, x: Tensor) -> Tuple[Tensor, Tensor]:
-        if x.ndim != 3:
-            raise ValueError(f"Expected [batch, channels, samples], got {tuple(x.shape)}")
-        if x.shape[-1] != self.config.input_samples:
-            raise ValueError(
-                f"Expected {self.config.input_samples} samples, got {x.shape[-1]}"
-            )
-
-        patches = x.unfold(
-            dimension=-1,
-            size=self.config.patch_samples,
-            step=self.config.patch_stride_samples,
-        )
-        raw_tokens = self.raw_projection(patches)
-        band_tokens = self.band_projection(self._bandpower_features(patches))
-        return self.norm(raw_tokens + band_tokens), patches
-
-    def _bandpower_features(self, patches: Tensor) -> Tensor:
-        spectrum = torch.fft.rfft(patches.float(), dim=-1)
-        power = spectrum.abs().square()
-        freqs = torch.fft.rfftfreq(
-            self.config.patch_samples,
-            d=1.0 / float(self.config.sampling_rate),
-        ).to(patches.device)
-        bands = [(8.0, 12.0), (13.0, 20.0), (20.0, 30.0)]
-        values = []
-        for low, high in bands:
-            mask = (freqs >= low) & (freqs <= high)
-            if torch.any(mask):
-                values.append(torch.log1p(power[..., mask].mean(dim=-1)))
-            else:
-                values.append(torch.zeros_like(power[..., 0]))
-        return torch.stack(values, dim=-1).to(dtype=patches.dtype)
+    def forward(self, x, valid):
+        b, c, p, d = x.shape
+        z, m = self.norms[0](x).reshape(b * c, p, d), valid.reshape(b * c, p)
+        x = x + attention(self.temporal, z, z, m, m).reshape(b, c, p, d)
+        z = self.norms[1](x).transpose(1, 2).reshape(b * p, c, d)
+        m = valid.transpose(1, 2).reshape(b * p, c)
+        x = x + attention(self.spatial, z, z, m, m).reshape(b, p, c, d).transpose(1, 2)
+        return (x + self.ff(self.norms[2](x))).masked_fill(~valid[..., None], 0)
 
 
-class BalancedSignedGraphUnrollBlock(nn.Module):
-    """BGL + LPF algorithm-unrolling block inspired by balanced signed graph EEG Transformer."""
-
-    def __init__(self, config: BSGMIMEConfig) -> None:
+class CompactBlock(nn.Module):
+    def __init__(self, cfg):
         super().__init__()
-        self.config = config
-        self.graph_norm = nn.LayerNorm(config.d_model)
-        self.query = nn.Linear(config.d_model, config.d_model, bias=False)
-        self.sign_head = nn.Linear(config.d_model, 1)
-        self.cutoff_logit = nn.Parameter(torch.tensor(0.0))
-        self.output_projection = nn.Linear(config.d_model, config.d_model)
+        self.temporal = nn.Conv1d(cfg.dim, cfg.dim, 3, padding=1, groups=cfg.dim)
+        self.norm = nn.LayerNorm(cfg.dim)
+        self.mix = nn.Sequential(nn.Linear(cfg.dim * 2, cfg.dim), nn.GELU(), nn.Linear(cfg.dim, cfg.dim))
 
-        self.temporal_norm = nn.LayerNorm(config.d_model)
-        self.temporal_filter = nn.Conv1d(
-            config.d_model,
-            config.d_model,
-            kernel_size=3,
-            padding=1,
-            groups=config.d_model,
-        )
-        hidden = config.d_model * config.mlp_ratio
-        self.ffn_norm = nn.LayerNorm(config.d_model)
-        self.ffn = nn.Sequential(
-            nn.Linear(config.d_model, hidden),
-            nn.GELU(),
-            nn.Dropout(config.dropout),
-            nn.Linear(hidden, config.d_model),
-            nn.Dropout(config.dropout),
-        )
-
-    def forward(self, x: Tensor, channel_mask: Optional[Tensor] = None) -> Tensor:
-        x = x + self.output_projection(self._balanced_signed_lpf(self.graph_norm(x), channel_mask))
-        x = x + self._temporal_lpf(self.temporal_norm(x))
-        return x + self.ffn(self.ffn_norm(x))
-
-    def _balanced_signed_lpf(self, x: Tensor, channel_mask: Optional[Tensor]) -> Tensor:
-        batch, channels, patches, dim = x.shape
-        nodes = x.permute(0, 2, 1, 3).reshape(batch * patches, channels, dim)
-        query = F.normalize(self.query(nodes), dim=-1)
-        affinity = torch.matmul(query, query.transpose(-1, -2)) / (dim**0.5)
-
-        valid_mask = None
-        if channel_mask is not None:
-            valid = channel_mask.bool().repeat_interleave(patches, dim=0)
-            valid_mask = valid[:, :, None] & valid[:, None, :]
-            affinity = affinity.masked_fill(~valid_mask, -1.0e4)
-
-        if 0 < self.config.graph_topk < channels:
-            topk_idx = affinity.topk(k=self.config.graph_topk, dim=-1).indices
-            topk_mask = torch.zeros_like(affinity, dtype=torch.bool)
-            topk_mask.scatter_(-1, topk_idx, True)
-            if valid_mask is not None:
-                topk_mask = topk_mask & valid_mask
-            affinity = affinity.masked_fill(~topk_mask, -1.0e4)
-
-        graph = torch.softmax(affinity, dim=-1)
-        polarity = torch.tanh(self.sign_head(nodes))
-        balanced_nodes = nodes * polarity
-        filtered = balanced_nodes
-        keep = torch.sigmoid(self.cutoff_logit)
-        for _ in range(self.config.propagation_steps):
-            filtered = keep * balanced_nodes + (1.0 - keep) * torch.matmul(graph, filtered)
-        restored = filtered * polarity
-        return restored.reshape(batch, patches, channels, dim).permute(0, 2, 1, 3)
-
-    def _temporal_lpf(self, x: Tensor) -> Tensor:
-        batch, channels, patches, dim = x.shape
-        seq = x.reshape(batch * channels, patches, dim).transpose(1, 2)
-        filtered = self.temporal_filter(seq).transpose(1, 2)
-        return filtered.reshape(batch, channels, patches, dim)
+    def forward(self, x, valid):
+        b, c, p, d = x.shape
+        z = self.norm(x).masked_fill(~valid[..., None], 0)
+        local = self.temporal(z.reshape(b * c, p, d).transpose(1, 2)).transpose(1, 2).reshape(b, c, p, d)
+        context = z.sum(1, keepdim=True) / valid.sum(1, keepdim=True).clamp_min(1)[..., None]
+        z = self.mix(torch.cat((local, context.expand_as(local)), -1))
+        return (x + z).masked_fill(~valid[..., None], 0)
 
 
-class BalancedSignedGraphMIME(nn.Module):
-    """Lightweight MI/ME encoder replacing attention Transformer with BSG unrolling."""
-
-    def __init__(self, config: Optional[BSGMIMEConfig] = None) -> None:
+class SignalEncoder(nn.Module):
+    def __init__(self, cfg):
         super().__init__()
-        self.config = config or BSGMIMEConfig()
-        cfg = self.config
+        self.cfg = cfg
+        k, d = cfg.patch_samples, cfg.dim
+        self.raw = nn.Linear(k, d)
+        # Only fusion variants use spectral content; causal uses a completed raw patch.
+        self.use_spectrum = cfg.architecture in {"fusion", "latent", "hierarchical"}
+        if self.use_spectrum:
+            self.wave = nn.Sequential(nn.Conv1d(1, 8, 5, padding=2), nn.GELU(),
+                                      nn.AdaptiveAvgPool1d(1), nn.Flatten(), nn.Linear(8, d))
+            self.spectrum = nn.Linear(k // 2 + 1, d)
+            self.fusion = nn.Linear(d * 3, d)
+        self.ids = nn.Embedding(cfg.channel_vocab, d)
+        self.coordinates = nn.Linear(3, d, bias=False)
+        self.mask_token = nn.Parameter(torch.zeros(d))
+        self.input_norm = nn.LayerNorm(d)
+        if cfg.architecture == "compact":
+            self.blocks = nn.ModuleList([CompactBlock(cfg) for _ in range(cfg.depth)])
+        elif cfg.architecture == "causal":
+            self.recurrent = nn.GRU(d, d, cfg.depth, batch_first=True,
+                                    dropout=cfg.dropout if cfg.depth > 1 else 0)
+        else:
+            self.blocks = nn.ModuleList([FactorBlock(cfg) for _ in range(cfg.depth)])
+        if cfg.architecture == "latent":
+            self.queries = nn.Parameter(torch.randn(cfg.latent_channels, d) * .02)
+            self.compress = nn.MultiheadAttention(d, cfg.heads, batch_first=True)
+            self.retrieve = nn.MultiheadAttention(d, cfg.heads, batch_first=True)
+        if cfg.architecture == "hierarchical":
+            self.epoch_gru = nn.GRU(d, d, batch_first=True)
+        self.adapter = nn.Sequential(nn.LayerNorm(d), nn.Linear(d, cfg.adapter_dim), nn.GELU(),
+                                     nn.Linear(cfg.adapter_dim, d))
+        nn.init.zeros_(self.adapter[-1].weight)
+        nn.init.zeros_(self.adapter[-1].bias)
+        self.final_norm = nn.LayerNorm(d)
 
-        self.patch_embed = BandAwarePatchEmbedding(cfg)
-        self.channel_embedding = nn.Parameter(torch.zeros(1, cfg.max_channels, 1, cfg.d_model))
-        self.time_embedding = nn.Parameter(torch.zeros(1, 1, cfg.num_time_patches, cfg.d_model))
-        self.mask_token = nn.Parameter(torch.zeros(1, 1, 1, cfg.d_model))
-        self.dropout = nn.Dropout(cfg.dropout)
-
-        self.blocks = nn.ModuleList([BalancedSignedGraphUnrollBlock(cfg) for _ in range(cfg.depth)])
-        self.final_norm = nn.LayerNorm(cfg.d_model)
-
-        self.reconstruction_head = nn.Linear(cfg.d_model, cfg.patch_samples)
-        self.state_head = nn.Linear(cfg.d_model, cfg.state_classes)
-        self.body_head = nn.Linear(cfg.d_model, cfg.body_classes)
-        self.joint_head = nn.Linear(cfg.d_model, cfg.joint_classes)
-
-        self.reset_parameters()
-
-    def reset_parameters(self) -> None:
-        nn.init.trunc_normal_(self.channel_embedding, std=0.02)
-        nn.init.trunc_normal_(self.time_embedding, std=0.02)
-        nn.init.trunc_normal_(self.mask_token, std=0.02)
-
-    def forward_features(
-        self,
-        x: Tensor,
-        channel_mask: Optional[Tensor] = None,
-        patch_mask: Optional[Tensor] = None,
-    ) -> Tensor:
-        tokens, _ = self.patch_embed(x)
-        _, channels, patches, _ = tokens.shape
-        if channels > self.config.max_channels:
-            raise ValueError(f"Expected at most {self.config.max_channels} channels, got {channels}")
-
-        tokens = tokens + self.channel_embedding[:, :channels] + self.time_embedding[:, :, :patches]
-        if patch_mask is not None:
-            tokens = torch.where(patch_mask[..., None].bool(), self.mask_token, tokens)
-        tokens = self.dropout(tokens)
-
+    def _hierarchical(self, x, valid):
+        b, c, p, d = x.shape
+        chunk = self.cfg.local_patches
+        extra = (-p) % chunk
+        z = F.pad(x, (0, 0, 0, extra)).reshape(b, c, -1, chunk, d)
+        m = F.pad(valid, (0, extra)).reshape(b, c, -1, chunk)
+        n = z.shape[2]
+        z = z.permute(0, 2, 1, 3, 4).reshape(b * n, c, chunk, d)
+        m = m.permute(0, 2, 1, 3).reshape(b * n, c, chunk)
         for block in self.blocks:
-            tokens = block(tokens, channel_mask=channel_mask)
-        return self.final_norm(tokens)
+            z = block(z, m)
+        pooled = z.sum((1, 2)) / m.sum((1, 2)).clamp_min(1)[:, None]
+        context, _ = self.epoch_gru(pooled.reshape(b, n, d))
+        z = z.reshape(b, n, c, chunk, d) + context[:, :, None, None]
+        return z.permute(0, 2, 1, 3, 4).reshape(b, c, n * chunk, d)[:, :, :p]
 
-    def forward(
-        self,
-        x: Tensor,
-        channel_mask: Optional[Tensor] = None,
-        patch_mask: Optional[Tensor] = None,
-    ) -> Dict[str, Tensor]:
-        features = self.forward_features(x, channel_mask=channel_mask, patch_mask=patch_mask)
-        pooled = self._masked_pool(features, channel_mask)
-        return {
-            "features": features,
-            "reconstruction": self.reconstruction_head(features),
-            "state_logits": self.state_head(pooled),
-            "body_logits": self.body_head(pooled),
-            "joint_logits": self.joint_head(pooled),
-        }
+    def forward(self, batch, token_mask=None):
+        raw, sample_valid = patchify(batch, self.cfg.patch_samples)
+        valid, weights = sample_valid.any(-1), sample_valid.float().mean(-1)
+        b, c, p, k = raw.shape
+        if token_mask is None:
+            token_mask = torch.zeros_like(valid)
+        if token_mask.shape != valid.shape or (token_mask & ~valid).any():
+            raise ValueError("SSL mask must select valid tokens only")
+        safe_raw = raw.masked_fill(token_mask[..., None], 0)
+        content = self.raw(safe_raw)
+        if self.use_spectrum:
+            wave = self.wave(safe_raw.reshape(-1, 1, k)).reshape(b, c, p, -1)
+            # FFT spacing is sample_rate/patch_samples; this is not long-window SSVEP resolution.
+            spectrum = torch.fft.rfft(safe_raw.float(), norm="ortho").abs().to(raw.dtype)
+            content = self.fusion(torch.cat((content, wave, self.spectrum(torch.log1p(spectrum))), -1))
+        content = torch.where(token_mask[..., None], self.mask_token, content)
+        channel_real = valid.any(-1)
+        ids = batch.channel_ids
+        if (((ids >= self.cfg.channel_vocab) | (ids < -1)) & channel_real).any():
+            raise ValueError("Channel ID outside vocabulary")
+        if ((ids < 0) & ~batch.coord_valid & channel_real).any():
+            raise ValueError("Missing channel identity and coordinates")
+        coord = self.coordinates(batch.coords.masked_fill(~batch.coord_valid[..., None], 0))
+        identity = self.ids(ids.clamp_min(0)) * (ids >= 0)[..., None]
+        position = time_position(p, self.cfg.dim, raw.device, raw.dtype,
+                                 self.cfg.patch_samples / self.cfg.sample_rate)
+        # Keep channel/time position even for masked patches.
+        x = self.input_norm(content + (coord + identity)[:, :, None] + position[None, None])
+        x = x.masked_fill(~valid[..., None], 0)
+        architecture = self.cfg.architecture
+        if architecture == "causal":
+            # State resets per independent sample; no bidirectionality, no future context.
+            x, _ = self.recurrent(x.reshape(b * c, p, -1))
+            x = x.reshape(b, c, p, -1)
+        elif architecture == "latent":
+            source = x.transpose(1, 2).reshape(b * p, c, -1)
+            m = valid.transpose(1, 2).reshape(b * p, c)
+            q = self.queries[None].expand(b * p, -1, -1)
+            qv = m.any(-1, keepdim=True).expand(-1, self.cfg.latent_channels)
+            compressed = attention(self.compress, q, source, m, qv)
+            compressed = compressed.reshape(b, p, self.cfg.latent_channels, -1).transpose(1, 2)
+            latent_valid = qv.reshape(b, p, self.cfg.latent_channels).transpose(1, 2)
+            for block in self.blocks:
+                compressed = block(compressed, latent_valid)
+            source_latent = compressed.transpose(1, 2).reshape(b * p, self.cfg.latent_channels, -1)
+            x = attention(self.retrieve, source, source_latent, qv, m)
+            x = x.reshape(b, p, c, -1).transpose(1, 2)
+        elif architecture == "hierarchical":
+            x = self._hierarchical(x, valid)
+        else:
+            for block in self.blocks:
+                x = block(x, valid)
+        x = self.final_norm(x + self.adapter(x)).masked_fill(~valid[..., None], 0)
+        return dict(tokens=x, valid=valid, weights=weights, raw=raw, sample_valid=sample_valid)
 
-    def reconstruction_loss(
-        self,
-        x: Tensor,
-        outputs: Dict[str, Tensor],
-        patch_mask: Optional[Tensor] = None,
-    ) -> Tensor:
-        _, target_patches = self.patch_embed(x)
-        loss = F.mse_loss(outputs["reconstruction"], target_patches, reduction="none").mean(dim=-1)
-        if patch_mask is not None:
-            weights = patch_mask.float()
-            return (loss * weights).sum() / weights.sum().clamp_min(1.0)
-        return loss.mean()
 
-    def _masked_pool(self, features: Tensor, channel_mask: Optional[Tensor]) -> Tensor:
-        if channel_mask is None:
-            return features.mean(dim=(1, 2))
-        weights = channel_mask.float()[:, :, None, None]
-        numerator = (features * weights).sum(dim=(1, 2))
-        denominator = weights.sum(dim=(1, 2)).clamp_min(1.0)
-        return numerator / denominator
+class SignalModel(nn.Module):
+    def __init__(self, cfg: ModelConfig):
+        super().__init__()
+        self.cfg, self.encoder = cfg, SignalEncoder(cfg)
+        self.head = nn.Linear(cfg.dim, cfg.outputs)
+        self.reconstruction = nn.Linear(cfg.dim, cfg.patch_samples)
+        self.bandpower = nn.Linear(cfg.dim, len(cfg.bands))
+
+    def forward(self, batch, token_mask=None):
+        output = self.encoder(batch, token_mask)
+        x, w = output["tokens"], output["weights"]
+        sequence = (x * w[..., None]).sum(1) / w.sum(1).clamp_min(1e-8)[..., None]
+        sequence_valid = output["valid"].any(1)
+        if self.cfg.architecture == "causal":
+            index = sequence_valid.sum(-1) - 1
+            pooled = sequence[torch.arange(x.shape[0], device=x.device), index]
+        else:
+            pooled = (x * w[..., None]).sum((1, 2)) / w.sum((1, 2)).clamp_min(1e-8)[:, None]
+        output.update(features=pooled, logits=self.head(pooled), sequence_logits=self.head(sequence),
+                      sequence_valid=sequence_valid, reconstruction=self.reconstruction(x),
+                      bandpower=self.bandpower(x))
+        return output
+
+    def configure_tuning(self, strategy):
+        if strategy not in {"full", "linear", "adapter"}:
+            raise ValueError("Tuning must be full, linear or adapter")
+        for name, param in self.named_parameters():
+            param.requires_grad_(strategy == "full" or name.startswith("head.") or
+                                 (strategy == "adapter" and name.startswith("encoder.adapter.")))
+
+    def config_dict(self):
+        return asdict(self.cfg)
 
 
-MIMEFactorizedTransformer = BalancedSignedGraphMIME
-
-
-def count_parameters(model: nn.Module, trainable_only: bool = True) -> int:
-    params = model.parameters()
-    if trainable_only:
-        params = [p for p in params if p.requires_grad]
-    return sum(p.numel() for p in params)
+def count_parameters(model, trainable_only=False):
+    return sum(p.numel() for p in model.parameters() if not trainable_only or p.requires_grad)

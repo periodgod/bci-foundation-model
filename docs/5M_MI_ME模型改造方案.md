@@ -1,3 +1,5 @@
+> 历史方案（已停止作为执行入口）：旧 BSG 模型与固定输入配置已删除。当前代码、配方、验证和剪枝规则以 [赛前代码底座与剪枝树](赛前代码底座与剪枝树.md) 为准。本文保留初期研究设计，不代表当前实现或已验证效果。
+
 # BSG 轻量 MI+ME 模型改造方案
 
 本文档把项目第一版模型从 10M 通用 EEG encoder 收敛为 5M 以下的 MI+ME 领域基础模型。当前默认模型参考图片中的 “Lightweight Transformer for EEG Classification via Balanced Signed Graph Algorithm Unrolling” 思路，将普通注意力 Transformer 替换为 **BGL 图学习 + LPF 低通图滤波** 的算法展开结构。
