@@ -2,14 +2,14 @@
 
 # bci-foundation-model
 
-**A lightweight EEG encoder that treats electrode layout as a graph, not as a fixed channel vector.**
+**A lightweight EEG research base: six encoder structures, four training objectives, three tuning strategies — all under a 5M parameter budget.**
 
-轻量脑电基础模型：用平衡符号图（BSG）展开替代注意力，在 **1.39M 参数**内完成 64 通道 MI/ME 建模与通道-时间掩码预训练。
+轻量脑电基础模型研究底座：主候选约 **4.91M 参数**，在同一数据契约、同一划分协议下横向比较编码器结构、预训练目标与调优策略。
 
-[![Python](https://img.shields.io/badge/Python-3.12-3776AB?style=flat-square&logo=python&logoColor=white)](#快速开始--quick-start)
-[![PyTorch](https://img.shields.io/badge/PyTorch-2.6-EE4C2C?style=flat-square&logo=pytorch&logoColor=white)](#快速开始--quick-start)
-[![Params](https://img.shields.io/badge/params-1.39M-orange?style=flat-square)](#模型设计--design)
-[![Status](https://img.shields.io/badge/status-pretraining%20prep-yellow?style=flat-square)](#当前状态--status)
+[![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB?style=flat-square&logo=python&logoColor=white)](#快速开始--quick-start)
+[![PyTorch](https://img.shields.io/badge/PyTorch-2.0%2B-EE4C2C?style=flat-square&logo=pytorch&logoColor=white)](#快速开始--quick-start)
+[![Params](https://img.shields.io/badge/main%20candidate-4.91M-orange?style=flat-square)](#结构--architectures)
+[![Status](https://img.shields.io/badge/status-research%20base-yellow?style=flat-square)](#结果状态--results-status)
 
 </div>
 
@@ -17,107 +17,114 @@
 
 ## 项目简介 / Overview
 
-主流脑电基础模型动辄数十亿参数，但脑电数据量远小于自然语言，参数预算与数据规模常常错配。本项目走相反方向：**在 5M 参数硬预算内，用归纳偏置换掉一部分参数**。
+脑电数据规模远小于自然语言，直接把大模型架构搬过来会参数与数据错配。本项目在 **5M 参数预算**内做系统性对照：同一份数据契约下，换编码器结构、换预训练目标、换调优策略，看哪些设计真正带来增益。
 
-具体选择是把电极空间关系直接编码进计算图——用图的低通传播替代 self-attention 的全局两两交互。这样做的代价是失去任意长程依赖，收益是参数效率与对电极拓扑的显式建模，且缺失通道可在结构层面处理，而不是靠零填充。
+结论先行：**工程链路成立，但"基础模型优于从头训练"在现有数据规模上没有成立。** 具体证据见下方结果表。
 
-> A sub-5M-parameter EEG encoder that replaces multi-head attention with balanced signed graph unrolling. Electrode topology is encoded as a sparse signed graph; channel-level masking gives native robustness to missing electrodes.
+> A 5M-budget EEG research base. The engineering pipeline is verified end to end across 69 real-data runs; the claimed benefit of a foundation model over training from scratch is **not** established at the current data scale.
 
 ---
 
-## 模型设计 / Design
+## 结构 / Architectures
 
-```mermaid
-flowchart LR
-    A["原始 EEG<br/>4 s @ 160 Hz, 64 ch"] --> B["0.5 s patch 切分<br/>8 patch × 64 ch<br/>= 512 tokens"]
-    B --> C["token = 波形嵌入<br/>⊕ μ/β 频带能量<br/>(8–12 / 13–20 / 20–30 Hz)"]
-    C --> D["BSG 图构建<br/>query 相似度 top-k=12<br/>+ sign_head 符号极性"]
-    D --> E["3 步低通图传播<br/>可学习截止系数 keep"]
-    E --> F["时间维 depthwise Conv1d"]
-    F --> G["分类 / 回归头<br/>或重建头"]
-```
+代码实现 6 种编码器，切换 `model.architecture` 即可（[`src/eeg_mime_foundation/model.py`](src/eeg_mime_foundation/model.py)）：
 
-| 设计点 | 实现 | 为什么 |
+| 结构 | 核心机制 | 对应设计意图 |
 |---|---|---|
-| **patch 划分** | 0.5 s / patch，8 patch × 64 通道 = 512 tokens | 与运动想象的 2 s 决策窗兼容，同时控制序列长度 |
-| **token 构造** | 波形嵌入 + 固定 μ/β 频带能量（8–12、13–20、20–30 Hz） | MI/ME 的 ERD/ERS 生理机制正落在 μ/β 频段，显式给出比让网络自己学更省样本 |
-| **图构建** | query 相似度取 top-k=12 建稀疏图 + softmax 归一化 | 稀疏化后传播代价与通道数近线性，避免 O(N²) |
-| **符号极性** | `sign_head` 输出边权正负 | 脑区之间既存在同步也存在反相，只用非负权重会丢失抑制关系 |
-| **图传播** | 3 步低通滤波，`keep` 为可学习截止系数 | 低通等价于局部平滑，3 步即覆盖相邻脑区；`keep` 让模型自行决定平滑强度 |
-| **时间建模** | depthwise Conv1d | 时间维度用卷积比注意力更省参数，且保持因果可控 |
-| **参数量** | **1,393,642**（含全部头） | 严格控制在 5M 预算内，留出预训练与多任务扩展空间 |
+| `fusion`（主候选） | patch 线性嵌入 + 波形卷积分支 + FFT 频谱分支，三路融合 | 时域与频域信息同时进入 token |
+| `factorized` | 先按通道做时间自注意力，再按时间片做空间自注意力 | 时空解耦，降低注意力复杂度 |
+| `compact` | depthwise Conv1d 时间卷积 + 通道上下文混合 | 最小参数预算下的卷积替代 |
+| `latent` | 可学习 latent query 压缩任意数量通道，再检索回通道维度 | **可变电极布局**：通道数变化时无需改结构 |
+| `hierarchical` | 局部分块处理后接 epoch 级 GRU | 长序列分层建模 |
+| `causal` | 时间维单向 GRU，无未来信息 | 在线/实时推理 |
 
-代码入口：[`src/eeg_mime_foundation/model.py`](src/eeg_mime_foundation/model.py)。
+所有结构共享：通道身份嵌入 + 3D 电极坐标嵌入 + 时间位置编码 + 零初始化残差 adapter + 三头输出（分类 / 重建 / 频带功率）。
 
----
+### 关于 BSG 图展开
 
-## 预训练目标 / Pretraining
+仓库历史中存在一次尝试（commit `35e4dea`，"Replace MI/ME encoder with balanced signed graph unrolling"），用平衡符号图展开替代注意力。**该实现不在当前训练管线中**——后续的数据管道、训练循环与检查点均基于上表 6 种结构。
 
-**通道-时间联合掩码重建（masked channel-time reconstruction）+ 频谱约束**：
-
-- 随机掩码 **55%** 的 token，要求模型重建被遮信号——脑电在时间与通道上都有强冗余，高掩码率才能逼出非平凡表征；
-- 重建损失之外加频带能量约束，防止模型只拟合波形细节而丢掉频段功率结构；
-- **`channel_mask` 是原生机制**：训练时按通道整列掩码，推理时可直接丢弃任意电极子集，无需重训。
-
-```bash
-# 掩码预训练 → 下游微调 → 评估
-python -m eeg_mime_foundation.cli train --config configs/fusion_masked.json \
-    --manifest data/processed/diagnostic/manifest.json --output experiments/outputs/masked
-python -m eeg_mime_foundation.cli train --config configs/fusion_supervised.json \
-    --manifest data/processed/diagnostic/manifest.json \
-    --initialize experiments/outputs/masked/best.pt --output experiments/outputs/finetuned
-python -m eeg_mime_foundation.cli evaluate --checkpoint experiments/outputs/finetuned/best.pt \
-    --manifest data/processed/diagnostic/manifest.json --split validation \
-    --output experiments/outputs/finetuned-validation
-```
+对外表述时请注意区分：*设计过图展开方案* ≠ *当前模型使用图展开*。
 
 ---
 
-## 实验结果 / Results
+## 训练目标 / Objectives
 
-在 **69 个已核验源码与检查点的真实数据运行**上（运动想象 + 睡眠，各扩展到 10 名被试）：
+| 目标 | 说明 |
+|---|---|
+| `supervised` | 纯监督分类 |
+| `masked` | 通道-时间联合掩码重建 + 频谱/频带约束 |
+| `contrastive` | 双视图对比 |
+| `ema` | EMA 自监督 + 监督头 |
+| 蒸馏 | 单/多教师，等权与学习门控 |
 
-| 任务 | 训练方式 | Balanced Accuracy |
+调优策略三档：`full`（全量微调）、`linear`（冻结编码器线性探测）、`adapter`（只训残差 adapter）。
+
+---
+
+## 结果 / Results
+
+**69 个已核验源码与检查点的真实数据运行**（运动想象 + 睡眠，各 10 名被试；主指标为逐被试平衡准确率再对种子平均，± 为三种子标准差）：
+
+| 路径 | MI BA | 睡眠 BA |
+|---|---:|---:|
+| 融合结构从零监督 | **51.72% ± 2.98** | 67.17% ± 3.84 |
+| 自研时空结构（取消融合） | 50.45% ± 0.45 | 57.98% ± 1.60 |
+| 掩码预训练 → 全量微调 | 51.37% ± 1.22 | **69.18% ± 1.82** |
+| 掩码预训练 → 冻结探测 | 53.68% ± 1.99 | 47.01% ± 4.61 |
+| 掩码预训练 → adapter | 53.45% ± 1.81 | 47.14% ± 2.45 |
+
+教师链路（仅 seed17）：EMA 预训练→微调 53.10/70.60；单教师 50.00–50.75；双教师等权 52.41/72.83；学习门控 51.39/65.99。
+少标签支持集（每类 8 试次，三种子均值）：scratch 51.24 / 30.26，masked_full 54.27 / 51.47。
+共享基座迁移（seed17）：full 50.43 / 68.04，linear 51.29 / 42.90。
+
+### 结论边界
+
+- 运动想象**接近机会水平**（二分类 50%），任何 MI 上的"提升"都在噪声量级内；
+- 掩码预训练在睡眠任务上有小幅增益（67.17 → 69.18），但**未做被试级显著性检验**；
+- 冻结探测在睡眠上**显著退化**（47.01），说明跨任务迁移依赖微调而非表征本身；
+- 因此当前**不声称**通用基础模型收益成立。
+
+完整验收记录：[`reports/基础模型直接研发验收.md`](reports/基础模型直接研发验收.md)。
+
+---
+
+## 结果状态 / Results Status
+
+| 实验 | 状态 | 说明 |
 |---|---|---|
-| 运动想象（MI） | 直接训练 | **51.72%** |
-| 运动想象（MI） | 掩码预训练 + 全量微调 | 51.37% |
-| 睡眠分期 | 直接训练 | **67.17%** |
-| 睡眠分期 | 掩码预训练 + 全量微调 | 69.18% |
+| 通道丢弃鲁棒性（MI，小容量模型） | ✅ 有结果 | [`reports/channel_dropout_mi.json`](reports/channel_dropout_mi.json)：154k 参数模型基线 BA 53.6%，保留 8 通道降至 49.5%（20 次随机抽样）。注意小容量模型基线本身偏低 |
+| 6 结构对照（MI，固定 8 epoch） | ⚠️ **未完成** | 单结构约需 8 分钟 CPU 训练，实际只完成第 1 个结构即终止；脚本 [`scripts/run_arch_ablation.py`](scripts/run_arch_ablation.py) 可直接续跑 |
+| 大容量主候选的通道鲁棒性 | ⚠️ **无法给出结论** | 4.9M 主候选在 270 训练窗口下塌缩为常数预测（BA 0.5000），曲线无意义 |
+| 跨设备 / 可变电极迁移 | ❌ **无数据** | 需要同一任务的多套电极布局，当前只有单一 64 导布局 |
+| BSG 图结构消融 | ❌ **不适用** | BSG 未进入当前管线（见上文） |
+| 正式预训练 | ❌ **未启动** | 受限于数据规模与清洗协议确认 |
+| EEG-to-LLM 指令调优 | ❌ **未实现** | 仓库内无相关代码 |
 
-同一联合预训练基座完成了两个任务的 full / linear 迁移。
-
-### 结论边界（重要）
-
-**代码可运行，不等于"基础模型优于从头训练"。** 上表说明的是：
-
-- 轻量编码器在两个任务上都**可训练、可迁移**，联合预训练基座可以同时支撑 MI 与睡眠；
-- 掩码预训练在 MI 上**没有**带来稳定增益（51.37% vs 51.72%），在睡眠上有小幅提升但尚未做被试级显著性检验；
-- 因此当前**不声称**通用基础模型收益成立。这类结论需要固定划分下的配对 bootstrap，而不是单点比较。
-
----
-
-## 当前状态 / Status
-
-项目处于**预训练准备阶段**，遵循"未跑通 sanity model 不启动正式预训练"的门禁：
-
-- [x] 编码器与预训练目标实现，参数量核验 1.39M
-- [x] 数据账本（NPZ/JSON manifest、真实通道身份、哈希、分组审计）
-- [x] 真实数据小规模验证（MI / 睡眠，各 10 被试）
-- [ ] 正式预训练（等待数据规模与清洗协议确认）
-- [ ] 跨设备迁移评测（可变电极布局）
-
-> 仓库不包含原始数据与检查点。`data/` 仅保留账本格式说明，真实数据按 [`data/README.md`](data/README.md) 的限定导入流程本地准备。
+> 原则：**没有数据就写没有数据**，不用合成数据冒充结果。缺失项在上表中逐条列出。
 
 ---
 
 ## 快速开始 / Quick Start
 
 ```bash
-py -3.12 -m pip install -e . --no-deps --no-build-isolation
-py -3.12 -X utf8 -m unittest discover -s tests -v
+pip install -e ".[eeg]"
 
-# 合成数据烟雾测试（只验证接口，不用于任何方案选择）
-py -3.12 -X utf8 -m eeg_mime_foundation.cli smoke --output experiments/outputs/my-smoke
+# 结构消融（固定清单、固定 epoch、多种子）
+python scripts/run_arch_ablation.py \
+    --manifest <manifest.json> --base-config <config.json> \
+    --output reports/arch_ablation_mi.json --seeds 17 --epochs 8
+
+# 通道丢弃鲁棒性（需多通道且有信号的数据集）
+python scripts/eval_channel_dropout.py \
+    --checkpoint <best.pt> --manifest <manifest.json> \
+    --output reports/channel_dropout.json --reps 10
+
+# 单次训练 / 评估
+python -m eeg_mime_foundation.cli train --config configs/fusion_masked.json \
+    --manifest <manifest.json> --output experiments/outputs/masked
+python -m eeg_mime_foundation.cli evaluate --checkpoint experiments/outputs/masked/best.pt \
+    --manifest <manifest.json> --split validation --output experiments/outputs/masked-eval
 ```
 
 每个实验使用**新目录**，避免覆盖历史证据。
@@ -128,11 +135,11 @@ py -3.12 -X utf8 -m eeg_mime_foundation.cli smoke --output experiments/outputs/m
 
 ```
 bci-foundation-model/
-├── src/eeg_mime_foundation/   # 编码器、预训练、训练循环、CLI
-├── configs/                   # 配方：fusion_masked / fusion_supervised / recipes
-├── scripts/                   # 真实数据准备、验证、蒸馏、few-shot、报告
-├── docs/                      # 架构、路线图、协议、赛前设计
-├── reports/                   # 验收记录（真实数据闭环、工程验收）
+├── src/eeg_mime_foundation/   # 编码器、目标函数、训练循环、CLI
+├── configs/                   # 配方（supervised / masked / contrastive / ema / 三档调优）
+├── scripts/                   # 真实数据准备、消融、通道丢弃、蒸馏、few-shot、报告
+├── docs/                      # 架构、路线图、协议、5M 改造方案
+├── reports/                   # 验收记录与消融结果
 ├── tests/                     # 单元测试
 └── experiments/ results/      # 本地输出（不入库）
 ```
@@ -140,10 +147,9 @@ bci-foundation-model/
 ## 文档 / Docs
 
 - [`docs/architecture.md`](docs/architecture.md) — 编码器与数据流
-- [`docs/roadmap.md`](docs/roadmap.md) — 阶段划分与门禁条件
 - [`docs/5M_MI_ME模型改造方案.md`](docs/5M_MI_ME模型改造方案.md) — 参数预算与模块取舍
-- [`docs/基础模型直接验证协议.md`](docs/基础模型直接验证协议.md) — 当前研发入口
-- [`docs/训练前问题清单.md`](docs/训练前问题清单.md) — 启动正式预训练前的 10 项检查
+- [`docs/基础模型直接验证协议.md`](docs/基础模型直接验证协议.md) — 验证入口与门禁
+- [`docs/训练前问题清单.md`](docs/训练前问题清单.md) — 启动正式预训练前的检查项
 - [`docs/联合预训练与共享基座规范.md`](docs/联合预训练与共享基座规范.md) — MI + 睡眠共享基座
 
 ## 在项目群中的位置

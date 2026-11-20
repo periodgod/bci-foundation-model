@@ -1,0 +1,71 @@
+{
+  "checkpoint": "D:\\wyu-bci\\bci-foundation-model\\experiments\\outputs\\e4-small-mi\\best.pt",
+  "manifest": "E:\\世界机器人大赛\\projects\\脑电大模型\\data\\processed\\precheck\\mi-development-v1\\manifest.json",
+  "split": "validation",
+  "samples": 135,
+  "channels": 64,
+  "reps": 20,
+  "baseline": {
+    "balanced_accuracy": 0.5364216549295775,
+    "accuracy": 0.5407407407407407
+  },
+  "levels": [
+    {
+      "keep": 64,
+      "mean": 0.5364216549295775,
+      "std": 0.0,
+      "acc": 0.5407407407407407,
+      "reps": 1
+    },
+    {
+      "keep": 56,
+      "mean": 0.5468364876760564,
+      "std": 0.019038103719826203,
+      "acc": 0.5496296296296296,
+      "reps": 20
+    },
+    {
+      "keep": 48,
+      "mean": 0.539816241197183,
+      "std": 0.03619443109348762,
+      "acc": 0.5411111111111111,
+      "reps": 20
+    },
+    {
+      "keep": 40,
+      "mean": 0.5396456866197183,
+      "std": 0.03156309927267871,
+      "acc": 0.5425925925925925,
+      "reps": 20
+    },
+    {
+      "keep": 32,
+      "mean": 0.538138204225352,
+      "std": 0.042417873194829314,
+      "acc": 0.5396296296296297,
+      "reps": 20
+    },
+    {
+      "keep": 24,
+      "mean": 0.5407680457746478,
+      "std": 0.04351465520077176,
+      "acc": 0.5429629629629631,
+      "reps": 20
+    },
+    {
+      "keep": 16,
+      "mean": 0.5203565140845071,
+      "std": 0.034900924528875575,
+      "acc": 0.5196296296296297,
+      "reps": 20
+    },
+    {
+      "keep": 8,
+      "mean": 0.49453125,
+      "std": 0.037431386390116596,
+      "acc": 0.4974074074074074,
+      "reps": 20
+    }
+  ],
+  "protocol": "channel validity mask (not zero fill); random uniform subset per repetition"
+}
