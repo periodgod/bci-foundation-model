@@ -1,0 +1,33 @@
+{
+  "model": {
+    "architecture": "fusion",
+    "sample_rate": 100,
+    "patch_samples": 50,
+    "dim": 64,
+    "depth": 2,
+    "heads": 4,
+    "mlp_ratio": 3,
+    "dropout": 0.1,
+    "task": "classification",
+    "outputs": 5,
+    "graph": true,
+    "graph_bins": 8
+  },
+  "labels": ["W", "N1", "N2", "N3", "REM"],
+  "training": {
+    "objective": "supervised",
+    "tuning": "full",
+    "epochs": 30,
+    "batch_size": 64,
+    "lr": 0.001,
+    "weight_decay": 0.01,
+    "seed": 17,
+    "device": "cpu",
+    "threads": 8,
+    "clip_grad": 1.0,
+    "max_seconds": 21600,
+    "selection_metric": "balanced_accuracy",
+    "direction": "max",
+    "channel_dropout": 0.0
+  }
+}

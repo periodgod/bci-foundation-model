@@ -187,7 +187,20 @@
 
 ```bash
 pip install -e ".[eeg]"
+```
 
+> **环境陷阱（踩过一次）**：本机上除了本仓库，还留着旧的
+> `E:\世界机器人大赛\projects\脑电大模型\src` 代码树，而 `site-packages` 里的
+> `__editable__.eeg_mime_foundation-0.1.0.pth` 曾经指向它。此时**不设 `PYTHONPATH`
+> 的 `python -c` / `python script.py` 会静默导入那份旧代码**，报错内容还会指向不存在的
+> 老 API（例如 `ModelConfig` 不认识 `graph`）。现已把该 `.pth` 重新指向本仓库，
+> 迁移过环境后请先确认：
+>
+> ```bash
+> python -c "import eeg_mime_foundation as m; print(m.__file__)"   # 必须落在本仓库 src 下
+> ```
+
+```bash
 # 0. 下载全量公开语料（PhysioNet 开放许可，≈13 GB；断点续传 + SHA256 校验）
 python scripts/download_corpora.py --dataset eegmmidb  --root D:/wyu-bci-data --jobs 16
 python scripts/download_corpora.py --dataset sleep-edfx --root D:/wyu-bci-data --jobs 16
