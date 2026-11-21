@@ -144,6 +144,7 @@ def main() -> None:
     version, root = meta["version"], Path(args.root).resolve() / args.dataset / meta["version"]
     records = [line.strip() for line in fetch_text(args.dataset, version, "RECORDS").splitlines()
                if line.strip()]
+    all_records = list(records)
     if args.subjects:
         wanted = set(args.subjects)
         records = [r for r in records if r.split("/")[0] in wanted]
@@ -162,7 +163,8 @@ def main() -> None:
     if args.dry_run:
         return
     root.mkdir(parents=True, exist_ok=True)
-    (root / "RECORDS").write_text("\n".join(records) + "\n", encoding="utf-8")
+    # 清单始终写全量（即使本次只下 --subjects 子集），避免后续 ingest 读到残缺 RECORDS。
+    (root / "RECORDS").write_text("\n".join(all_records) + "\n", encoding="utf-8")
     if checksum_text:
         (root / "SHA256SUMS.txt").write_text(checksum_text, encoding="utf-8")
 

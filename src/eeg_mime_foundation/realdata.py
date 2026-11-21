@@ -117,6 +117,8 @@ def corpus_spec(kind, directory, seed=0, epoch_stride=4, runs=None):
         spec["epoch_stride"] = epoch_stride
     if not files:
         raise ValueError(f"{directory} 下没有找到 {kind} 语料，先运行 scripts/download_corpora.py")
+    if len(subjects) < 5:
+        raise ValueError(f"{directory} 只有 {len(subjects)} 名被试，语料不完整或下载未完成")
     spec["files"], spec["subjects"] = files, split_subjects(subjects, seed)
     spec["scope"] = "corpus"
     return spec
