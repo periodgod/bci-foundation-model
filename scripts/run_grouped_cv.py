@@ -5,6 +5,10 @@
 
 保留集不参与：清单里 split=="test" 的被试整折排除，只在其上做最终评测时才会用到。
 
+折数自适应：`--folds` 大于可用被试数时退到"每折留一人"，实际折数写进 `summary.json`
+的 `folds`，请求值留在 `requested_folds`。BCIC IV 2a/2b 扣掉保留测试集后各只剩 8 人，
+按 10 折会直接拒绝执行。
+
 用法（仓库根目录）：
     python scripts/run_grouped_cv.py --name cv-fusion --arch fusion \
         --manifest D:/wyu-bci-data/processed/corpus/mi-corpus-v1/manifest.json \
@@ -49,12 +53,18 @@ def main() -> None:
     for record in manifest["samples"]:
         split_of.setdefault(record["subject"], record["split"])
     subjects = sorted(s for s, split in split_of.items() if split != "test")
-    if len(subjects) < args.folds * 2:
-        raise SystemExit(f"可用被试 {len(subjects)} 太少，无法做 {args.folds} 折")
+    if len(subjects) < 2:
+        raise SystemExit(f"可用被试只有 {len(subjects)} 名，无法做分组交叉验证")
+    # 被试少的库（BCIC 2a/2b 各 9 人，扣掉保留测试集只剩 8 人）跑不了 10 折。
+    # 与其报错，不如退到"每折留一人"，但把实际折数写进 summary，不假装还是 10 折。
+    folds_count = min(args.folds, len(subjects))
+    if folds_count != args.folds:
+        print(f"可用被试 {len(subjects)} 名少于请求的 {args.folds} 折，"
+              f"退到 {folds_count} 折（每折留一人）", flush=True)
     order = np.random.default_rng(args.seed).permutation(len(subjects))
-    folds = [sorted(subjects[i] for i in order[rank::args.folds]) for rank in range(args.folds)]
+    folds = [sorted(subjects[i] for i in order[rank::folds_count]) for rank in range(folds_count)]
     print(f"subjects={len(subjects)} (保留测试集 {len(split_of) - len(subjects)} 名不参与) "
-          f"folds={args.folds}", flush=True)
+          f"folds={folds_count}", flush=True)
 
     base = json.loads(Path(args.base_config).read_text(encoding="utf-8"))
     root = Path(args.out_root) / args.name
@@ -92,7 +102,8 @@ def main() -> None:
 
     values = [r["balanced_accuracy"] for r in rows if r["balanced_accuracy"] is not None]
     summary = dict(protocol="subject-grouped-kfold", arch=args.arch, graph=args.graph,
-                   channel_dropout=args.channel_dropout, folds=args.folds, epochs=args.epochs,
+                   channel_dropout=args.channel_dropout, folds=folds_count,
+                   requested_folds=args.folds, epochs=args.epochs,
                    seed=args.seed, subjects=len(subjects), results=rows,
                    mean_balanced_accuracy=float(statistics.mean(values)) if values else None,
                    std_balanced_accuracy=float(statistics.pstdev(values)) if len(values) > 1 else None,
