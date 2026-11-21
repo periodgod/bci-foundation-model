@@ -233,6 +233,13 @@ python scripts/check_cross_dataset.py \
     --manifest mi=<mi manifest> --manifest bcic2a=<2a manifest> \
     --output D:/wyu-bci-data/processed/corpus/shared-vocabulary-v1/cross_check.json
 
+# 0.18 跨设备冻结迁移评测（不做微调，归一化统计取检查点里的 train-only 值）
+#      按"电极名"把目标库映射到检查点的词表；映射率会写进 metrics.json
+python scripts/run_cross_transfer.py \
+    --checkpoint <mi best.pt> \
+    --manifest D:/wyu-bci-data/processed/corpus/bcic2a-corpus-v1/manifest.json \
+    --split validation --library bcic2a --output experiments/outputs/cross/bcic2a
+
 # 0.2 被试分组交叉验证（大语料上的对照协议；--graph / --channel-dropout 做 A/B）
 python scripts/run_grouped_cv.py --name cv-fusion --arch fusion \
     --manifest D:/wyu-bci-data/processed/corpus/mi-corpus-v1/manifest.json \
