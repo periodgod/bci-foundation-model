@@ -105,7 +105,8 @@ def corpus_spec(kind, directory, seed=0, epoch_stride=4, runs=None):
         spec["runs"] = list(selected)
     else:
         pairs = sleep_pairs(directory)
-        files = [f"sleep-cassette/{name}" for pair in pairs for name in pair]
+        # pairs 里已带子库前缀（sleep-cassette/ 或 sleep-telemetry/），不要再拼一次。
+        files = [name for pair in pairs for name in pair]
         subjects = {Path(psg).name[:5] for psg, _ in pairs}
         spec["epoch_stride"] = epoch_stride
     if not files:
