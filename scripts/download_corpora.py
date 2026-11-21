@@ -82,8 +82,60 @@ def sha256_of(path: Path) -> str:
     return digest.hexdigest()
 
 
+def remote_size(name: str, version: str, path: str) -> int | None:
+    for url in _urls(name, version, path):
+        try:
+            request = urllib.request.Request(url, method="HEAD",
+                                             headers={"User-Agent": "wyu-bci-downloader/1.0"})
+            with urllib.request.urlopen(request, timeout=60) as response:
+                length = response.headers.get("Content-Length")
+                if length:
+                    return int(length)
+        except (urllib.error.URLError, OSError):
+            continue
+    return None
+
+
+def download_ranged(name: str, version: str, path: str, part: Path, size: int,
+                    chunk_bytes: int, chunk_jobs: int, retries: int = 4) -> None:
+    """把大文件切成固定大小的字节区间并发拉取。
+
+    PhysioNet 的单连接被限速到几十 KB/s，而并发连接的总吞吐随连接数上升；
+    48 MB 的睡眠 PSG 用 8 路区间下载即可把单文件耗时压到分钟级。
+    """
+    ranges = [(start, min(start + chunk_bytes, size) - 1) for start in range(0, size, chunk_bytes)]
+    with part.open("wb") as handle:
+        handle.truncate(size)
+
+    def pull(bounds):
+        start, end = bounds
+        last = None
+        for attempt in range(retries):
+            for url in _urls(name, version, path):
+                try:
+                    request = urllib.request.Request(
+                        url, headers={"User-Agent": "wyu-bci-downloader/1.0",
+                                      "Range": f"bytes={start}-{end}"})
+                    with urllib.request.urlopen(request, timeout=180) as response:
+                        data = response.read()
+                    if len(data) != end - start + 1:
+                        raise OSError(f"区间长度不符 {len(data)} != {end - start + 1}")
+                    with part.open("r+b") as handle:
+                        handle.seek(start)
+                        handle.write(data)
+                    return
+                except (urllib.error.URLError, OSError) as exc:
+                    last = exc
+            time.sleep(1.5 * (attempt + 1))
+        raise RuntimeError(f"{path} 区间 {start}-{end} 失败: {last}")
+
+    with ThreadPoolExecutor(max_workers=chunk_jobs) as pool:
+        for future in [pool.submit(pull, bounds) for bounds in ranges]:
+            future.result()
+
+
 def download_one(name: str, version: str, path: str, root: Path, expected: str | None,
-                 retries: int = 4) -> dict:
+                 retries: int = 4, chunk_bytes: int = 8 << 20, chunk_jobs: int = 8) -> dict:
     target = root / path
     target.parent.mkdir(parents=True, exist_ok=True)
     if target.exists() and target.stat().st_size > 0:
@@ -91,6 +143,16 @@ def download_one(name: str, version: str, path: str, root: Path, expected: str |
             return dict(path=path, bytes=target.stat().st_size, status="cached")
 
     part = target.with_suffix(target.suffix + ".part")
+    size = remote_size(name, version, path)
+    if size and size > chunk_bytes and chunk_jobs > 1:
+        download_ranged(name, version, path, part, size, chunk_bytes, chunk_jobs)
+        digest = sha256_of(part)
+        if expected and digest != expected:
+            part.unlink(missing_ok=True)
+            raise RuntimeError(f"{path} 校验失败: {digest} != {expected}")
+        part.replace(target)
+        return dict(path=path, bytes=target.stat().st_size, status="downloaded")
+
     last = None
     for attempt in range(retries):
         offset = part.stat().st_size if part.exists() else 0
@@ -136,6 +198,8 @@ def main() -> None:
     ap.add_argument("--dataset", required=True, choices=sorted(CORPORA))
     ap.add_argument("--root", required=True, help="数据根目录，例如 D:/wyu-bci-data")
     ap.add_argument("--jobs", type=int, default=8)
+    ap.add_argument("--chunk-mb", type=int, default=8, help="大于该体积的文件按区间并发下载")
+    ap.add_argument("--chunk-jobs", type=int, default=8, help="每个大文件的并发区间数，0 表示关闭")
     ap.add_argument("--subjects", nargs="*", default=None, help="只下指定被试，如 S001 S002")
     ap.add_argument("--dry-run", action="store_true")
     args = ap.parse_args()
@@ -171,7 +235,8 @@ def main() -> None:
     started, done, failed, moved = time.time(), 0, [], 0
     with ThreadPoolExecutor(max_workers=args.jobs) as pool:
         futures = {pool.submit(download_one, args.dataset, version, path, root,
-                               checksums.get(path)): path for path in records}
+                               checksums.get(path), 4, args.chunk_mb << 20, args.chunk_jobs): path
+                   for path in records}
         for future in as_completed(futures):
             path = futures[future]
             try:
