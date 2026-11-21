@@ -15,7 +15,7 @@ import torch
 from torch.nn import functional as F
 from torch.utils.data import DataLoader
 
-from .data import ManifestDataset, Normalizer, collate, group_key, sha256
+from .data import Batch, ManifestDataset, Normalizer, collate, group_key, sha256
 from .metrics import summarize
 from .model import ModelConfig, SignalModel, count_parameters, patchify
 from .objectives import (EMATarget, MultiTeacherLoss, contrastive_loss, latent_loss,
@@ -130,9 +130,12 @@ def validate_config(config):
     t = config["training"]
     valid_keys = {"objective", "epochs", "batch_size", "lr", "weight_decay", "seed", "device", "threads",
                   "tuning", "mask_ratio", "mask_kind", "band_weight", "spectral_weight", "ema_weight", "ema_decay",
-                  "clip_grad", "max_seconds", "selection_metric", "direction", "class_balance", "batch_by_dataset"}
+                  "clip_grad", "max_seconds", "selection_metric", "direction", "class_balance", "batch_by_dataset",
+                  "channel_dropout"}
     if set(t) - valid_keys:
         raise ValueError(f"Unknown training fields: {set(t) - valid_keys}")
+    if not 0. <= t.get("channel_dropout", 0.) < 1.:
+        raise ValueError("channel_dropout must be in [0, 1)")
     if t["objective"] not in {"supervised", "masked", "ema", "contrastive", "distill"}:
         raise ValueError("Unknown training objective")
     if t.get("class_balance", "none") not in {"none", "inverse_frequency"}:
@@ -152,6 +155,29 @@ def validate_config(config):
         if len(labels) != cfg.outputs or len(set(labels)) != len(labels):
             raise ValueError("Ordered unique classification labels required")
     return cfg
+
+
+def drop_channels(batch, rate, generator=None):
+    """训练期随机屏蔽整通道（导联丢弃增广）。
+
+    直接针对 T1 的实测结论做增广：同一权重在 8 导 / 3 导上掉 13–14 个百分点。
+    只改 `valid` 与对应信号，不改通道 ID 与坐标——模型看到的仍是"这顶帽子上少了几个电极"，
+    而不是"换了一套编码"。每个样本至少保留一个通道。
+    """
+    if rate <= 0:
+        return batch
+    shape = batch.valid.shape
+    # 按"通道"整列丢弃，而不是按时间点随机涂抹：模拟的是电极没贴/没戴。
+    drawn = torch.rand((shape[0], shape[1], 1), generator=generator)
+    keep = (drawn >= rate) & batch.valid
+    empty = ~keep.any(-1).any(-1)
+    if empty.any():
+        first = batch.valid.any(-1).float().argmax(-1)
+        rows = torch.arange(shape[0])[empty]
+        keep[rows, first[empty]] = True
+    valid = batch.valid & keep
+    return Batch(batch.x.masked_fill(~valid, 0), valid, batch.channel_ids, batch.coords,
+                 batch.coord_valid, batch.target, batch.metadata)
 
 
 class Runner:
@@ -315,6 +341,10 @@ class Runner:
         if output["logits"].shape != target.shape:
             raise ValueError("Regression target must be [B,outputs]")
         return F.mse_loss(output["logits"], target)
+
+    def drop_channels(self, batch):
+        """按 `training.channel_dropout` 施加导联丢弃；验证集不增广。"""
+        return drop_channels(batch, self.training.get("channel_dropout", 0.))
 
     def loss(self, raw_batch):
         t, objective = self.training, self.training["objective"]
@@ -481,7 +511,7 @@ class Runner:
                 if time.monotonic() - start > self.training.get("max_seconds", float("inf")):
                     raise TimeoutError("Budget exceeded; resume the last complete epoch")
                 self.optimizer.zero_grad(set_to_none=True)
-                loss, detail = self.loss(batch.to(self.device))
+                loss, detail = self.loss(self.drop_channels(batch.to(self.device)))
                 if not torch.isfinite(loss):
                     raise FloatingPointError("Non-finite loss; affected stage stopped")
                 loss.backward()

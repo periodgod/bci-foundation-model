@@ -40,6 +40,21 @@
 
 所有结构共享：通道身份嵌入 + 3D 电极坐标嵌入 + 时间位置编码 + 零初始化残差 adapter + 三头输出（分类 / 重建 / 频带功率）。
 
+### 坐标与图偏置
+
+坐标不再恒为零：`montage.py` 用 MNE `standard_1020` 模板把导联名解析成头表米制坐标
+（EEGMMIDB 64 导 **64/64** 解析成功，双极导联取中点）。此前预处理写的是
+`coords=0, coord_valid=False`，坐标分支实际上从未被激活——这一条已修正，
+证据见 [`docs/全量语料与坐标协议.md`](docs/全量语料与坐标协议.md)。
+
+在此之上新增可选的**图条件注意力**（`model.graph=true`）：成对电极距离经高斯核展开、
+线性映射为每头加性偏置，零初始化注入空间注意力。它对应一个已知缺陷——
+结构化移除 8 导（0.5288）与随机移除 8 导（0.5390）几乎等价，说明模型此前没有真正利用电极拓扑。
+配套的**导联丢弃增广**（`training.channel_dropout`）在训练期整列屏蔽通道，逼模型适应更稀疏的帽子。
+
+两者目前均为 `已实现、未验证`：单测覆盖了填充不变、通道置换等变、零初始化等价，
+但性能对照尚未跑（协议见下文）。
+
 ### 关于 BSG 图展开
 
 仓库历史中存在一次尝试（commit `35e4dea`，"Replace MI/ME encoder with balanced signed graph unrolling"），用平衡符号图展开替代注意力。**该实现不在当前训练管线中**——后续的数据管道、训练循环与检查点均基于上表 6 种结构。
@@ -99,6 +114,8 @@
 | 导联子集迁移（T1，LOSO 协议） | ✅ 有结果 | 64→32/19/8/3 导单调下降，8 导与 3 导 **10/10 折全部下降**。见下节 |
 | 大容量主候选的通道鲁棒性 | ⚠️ **无法给出结论** | 4.9M 主候选在 270 训练窗口下未能收敛到可用状态，通道曲线无意义 |
 | 真实跨设备 / 跨数据集迁移 | ❌ **无数据** | 需要同任务、不同硬件的第二份数据（2a / 2b / OpenBMI），当前只有单一 64 导布局 |
+| 全量语料（109 被试 / 153 条睡眠） | 🟡 **下载中，ingest 与对照待跑** | 见 [`docs/数据资产与缺口.md`](docs/数据资产与缺口.md) 与 [`docs/全量语料与坐标协议.md`](docs/全量语料与坐标协议.md) |
+| 图偏置 / 导联丢弃对照 | 🟡 **代码与单测完成，结果待跑** | `GraphBlock`、`drop_channels`、`scripts/run_grouped_cv.py` 均已就绪 |
 | BSG 图结构消融 | ❌ **不适用** | BSG 未进入当前管线（见上文） |
 | 正式预训练 | ❌ **未启动** | 受限于数据规模与清洗协议确认 |
 | EEG-to-LLM 指令调优 | ❌ **未实现** | 仓库内无相关代码 |
@@ -169,6 +186,19 @@
 ```bash
 pip install -e ".[eeg]"
 
+# 0. 下载全量公开语料（PhysioNet 开放许可，≈13 GB；断点续传 + SHA256 校验）
+python scripts/download_corpora.py --dataset eegmmidb  --root D:/wyu-bci-data --jobs 16
+python scripts/download_corpora.py --dataset sleep-edfx --root D:/wyu-bci-data --jobs 16
+
+# 0.1 切窗并写入真实电极坐标（产出带坐标的 manifest）
+python scripts/prepare_real_data.py ingest --dataset mi    --root D:/wyu-bci-data --scope corpus
+python scripts/prepare_real_data.py ingest --dataset sleep --root D:/wyu-bci-data --scope corpus
+
+# 0.2 被试分组交叉验证（大语料上的对照协议；--graph / --channel-dropout 做 A/B）
+python scripts/run_grouped_cv.py --name cv-fusion --arch fusion \
+    --manifest D:/wyu-bci-data/processed/corpus/mi-corpus-v1/manifest.json \
+    --base-config configs/mi_corpus_supervised.json --folds 10 --epochs 40
+
 # 结构消融（固定清单、固定 epoch、多种子；当前仅支持单次划分）
 python scripts/run_arch_ablation.py \
     --manifest <manifest.json> --base-config <config.json> \
@@ -229,6 +259,8 @@ bci-foundation-model/
 ## 文档 / Docs
 
 - [`docs/能力与代码对应表.md`](docs/能力与代码对应表.md) — 每项能力的状态、代码位置与证据（哪些只是架构支持、哪些已有实验）
+- [`docs/数据资产与缺口.md`](docs/数据资产与缺口.md) — 已有数据集、缺口、下载执行状态
+- [`docs/全量语料与坐标协议.md`](docs/全量语料与坐标协议.md) — 109 被试语料、真实电极坐标、图偏置与导联丢弃的设计和待跑协议
 - [`docs/architecture.md`](docs/architecture.md) — 编码器与数据流
 - [`docs/5M_MI_ME模型改造方案.md`](docs/5M_MI_ME模型改造方案.md) — 参数预算与模块取舍
 - [`docs/基础模型直接验证协议.md`](docs/基础模型直接验证协议.md) — 验证入口与门禁

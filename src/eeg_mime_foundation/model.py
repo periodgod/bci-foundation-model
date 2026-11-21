@@ -23,6 +23,8 @@ class ModelConfig:
     latent_channels: int = 4
     local_patches: int = 8
     adapter_dim: int = 12
+    graph: bool = False
+    graph_bins: int = 8
     task: str = "classification"
     outputs: int = 2
     bands: tuple = ((1., 4.), (4., 8.), (8., 13.), (13., 30.))
@@ -35,6 +37,11 @@ class ModelConfig:
             raise ValueError("Model dimensions must be positive")
         if self.dim % self.heads or self.patch_samples < 4 or not 0 <= self.dropout < 1:
             raise ValueError("Invalid head/patch/dropout setting")
+        if self.graph and self.architecture in {"latent", "compact", "causal"}:
+            # 这三类结构在 block 之前已经把通道轴换掉或压掉了，图上没有物理通道可对齐。
+            raise ValueError("graph bias needs physical channel tokens (fusion/factorized/hierarchical)")
+        if self.graph and self.graph_bins < 2:
+            raise ValueError("graph_bins must be at least 2")
         if self.task not in {"classification", "regression", "sequence_classification", "sequence_regression"}:
             raise ValueError("Unknown task head")
         if not self.bands or any(not 0 <= lo < hi <= self.sample_rate / 2 for lo, hi in self.bands):
@@ -102,6 +109,75 @@ class FactorBlock(nn.Module):
         return (x + self.ff(self.norms[2](x))).masked_fill(~valid[..., None], 0)
 
 
+class BiasedAttention(nn.Module):
+    """通道轴 attention，可接收 `[B,H,C,C]` 的加性偏置（电极距离先验）。
+
+    与 `nn.MultiheadAttention` 的区别只有一个：允许按头注入与输入内容无关的结构先验。
+    全屏蔽行（只有填充通道）不能进 softmax，先置零再靠 query 掩码抹掉输出。
+    """
+
+    def __init__(self, cfg):
+        super().__init__()
+        self.heads, self.head_dim = cfg.heads, cfg.dim // cfg.heads
+        self.qkv = nn.Linear(cfg.dim, cfg.dim * 3)
+        self.out = nn.Linear(cfg.dim, cfg.dim)
+        self.dropout = cfg.dropout
+
+    def forward(self, x, valid, bias=None):
+        b, c, d = x.shape
+        q, k, v = self.qkv(x).split(d, dim=-1)
+        shape = (b, c, self.heads, self.head_dim)
+        q, k, v = (t.reshape(shape).transpose(1, 2) for t in (q, k, v))
+        scores = q @ k.transpose(-1, -2) / math.sqrt(self.head_dim)
+        if bias is not None:
+            scores = scores + bias
+        scores = scores.masked_fill(~valid[:, None, None, :], float("-inf"))
+        scores = scores.masked_fill((~valid.any(-1))[:, None, None, None], 0.)
+        weights = F.dropout(scores.softmax(-1), self.dropout, self.training)
+        return self.out((weights @ v).transpose(1, 2).reshape(b, c, d))
+
+
+class GraphBlock(nn.Module):
+    """时间 self-attention + 空间 attention（带电极距离偏置）。
+
+    偏置由成对距离的高斯基展开经线性映射得到，零初始化——训练起点与普通 attention
+    完全等价，图先验只作为可学习的增量引入，不会一上来就打乱已训好的表征。
+    """
+
+    def __init__(self, cfg):
+        super().__init__()
+        self.cfg = cfg
+        self.temporal = nn.MultiheadAttention(cfg.dim, cfg.heads, cfg.dropout, batch_first=True)
+        self.spatial = BiasedAttention(cfg)
+        self.norms = nn.ModuleList([nn.LayerNorm(cfg.dim) for _ in range(3)])
+        self.ff = nn.Sequential(nn.Linear(cfg.dim, cfg.dim * cfg.mlp_ratio), nn.GELU(),
+                                nn.Dropout(cfg.dropout), nn.Linear(cfg.dim * cfg.mlp_ratio, cfg.dim))
+        # 头表直径约 0.17 m，核中心铺满这一段；宽度可学。
+        self.centers = nn.Parameter(torch.linspace(.01, .16, cfg.graph_bins))
+        self.width = nn.Parameter(torch.full((cfg.graph_bins,), .02))
+        self.bias = nn.Linear(cfg.graph_bins, cfg.heads, bias=False)
+        nn.init.zeros_(self.bias.weight)
+
+    def distance_bias(self, coords, coord_valid):
+        distance = torch.cdist(coords, coords)
+        rbf = torch.exp(-((distance[..., None] - self.centers) ** 2) /
+                        (2 * self.width.clamp_min(1e-3) ** 2))
+        bias = self.bias(rbf).permute(0, 3, 1, 2)
+        both = (coord_valid[:, :, None] & coord_valid[:, None, :])[:, None]
+        return bias * both
+
+    def forward(self, x, valid, coords, coord_valid):
+        b, c, p, d = x.shape
+        z, m = self.norms[0](x).reshape(b * c, p, d), valid.reshape(b * c, p)
+        x = x + attention(self.temporal, z, z, m, m).reshape(b, c, p, d)
+        bias = self.distance_bias(coords, coord_valid)
+        bias = bias[:, :, None].expand(-1, -1, p, -1, -1).reshape(b * p, self.cfg.heads, c, c)
+        z = self.norms[1](x).transpose(1, 2).reshape(b * p, c, d)
+        m = valid.transpose(1, 2).reshape(b * p, c)
+        x = x + self.spatial(z, m, bias).reshape(b, p, c, d).transpose(1, 2)
+        return (x + self.ff(self.norms[2](x))).masked_fill(~valid[..., None], 0)
+
+
 class CompactBlock(nn.Module):
     def __init__(self, cfg):
         super().__init__()
@@ -141,7 +217,8 @@ class SignalEncoder(nn.Module):
             self.recurrent = nn.GRU(d, d, cfg.depth, batch_first=True,
                                     dropout=cfg.dropout if cfg.depth > 1 else 0)
         else:
-            self.blocks = nn.ModuleList([FactorBlock(cfg) for _ in range(cfg.depth)])
+            self.blocks = nn.ModuleList([GraphBlock(cfg) if cfg.graph else FactorBlock(cfg)
+                                         for _ in range(cfg.depth)])
         if cfg.architecture == "latent":
             self.queries = nn.Parameter(torch.randn(cfg.latent_channels, d) * .02)
             self.compress = nn.MultiheadAttention(d, cfg.heads, batch_first=True)
@@ -154,7 +231,7 @@ class SignalEncoder(nn.Module):
         nn.init.zeros_(self.adapter[-1].bias)
         self.final_norm = nn.LayerNorm(d)
 
-    def _hierarchical(self, x, valid):
+    def _hierarchical(self, x, valid, coords, coord_valid):
         b, c, p, d = x.shape
         chunk = self.cfg.local_patches
         extra = (-p) % chunk
@@ -163,8 +240,10 @@ class SignalEncoder(nn.Module):
         n = z.shape[2]
         z = z.permute(0, 2, 1, 3, 4).reshape(b * n, c, chunk, d)
         m = m.permute(0, 2, 1, 3).reshape(b * n, c, chunk)
+        chunk_coords = coords.repeat_interleave(n, dim=0)
+        chunk_valid = coord_valid.repeat_interleave(n, dim=0)
         for block in self.blocks:
-            z = block(z, m)
+            z = block(z, m, chunk_coords, chunk_valid) if self.cfg.graph else block(z, m)
         pooled = z.sum((1, 2)) / m.sum((1, 2)).clamp_min(1)[:, None]
         context, _ = self.epoch_gru(pooled.reshape(b, n, d))
         z = z.reshape(b, n, c, chunk, d) + context[:, :, None, None]
@@ -218,10 +297,11 @@ class SignalEncoder(nn.Module):
             x = attention(self.retrieve, source, source_latent, qv, m)
             x = x.reshape(b, p, c, -1).transpose(1, 2)
         elif architecture == "hierarchical":
-            x = self._hierarchical(x, valid)
+            x = self._hierarchical(x, valid, batch.coords, batch.coord_valid)
         else:
             for block in self.blocks:
-                x = block(x, valid)
+                x = (block(x, valid, batch.coords, batch.coord_valid) if self.cfg.graph
+                     else block(x, valid))
         x = self.final_norm(x + self.adapter(x)).masked_fill(~valid[..., None], 0)
         return dict(tokens=x, valid=valid, weights=weights, raw=raw, sample_valid=sample_valid)
 

@@ -11,6 +11,7 @@ import time
 import numpy as np
 
 from .data import audit_splits, sha256
+from .montage import coordinates_for
 
 
 SOURCES = {
@@ -45,9 +46,81 @@ def source_spec(kind, scope):
         spec["subjects"] = {f"S{i:03d}" if kind == "mi" else f"SC4{i:02d}":
                             "test" if i == test else "validation" if i in validation else "train" for i in ids}
         spec["files"] = [f"S{i:03d}/S{i:03d}R{r:02d}.edf" for i in ids for r in (4, 8, 12)] if kind == "mi" else []
+    elif scope == "corpus":
+        # 全量语料：文件与被试划分都在运行期从磁盘实测得到，不在此处硬编码。
+        spec["files"] = []
     elif scope != "smoke":
         raise ValueError("Unknown intake scope")
     return spec
+
+
+def raw_dir(root, kind, scope):
+    spec = SOURCES[kind]
+    base = Path(root).resolve()
+    if scope == "corpus":
+        return base / spec["dataset"] / spec["version"]
+    return base / "raw" / "precheck" / spec["dataset"] / spec["version"]
+
+
+def sleep_pairs(directory):
+    """PSG 与分期标注配对：`SC4001E0-PSG.edf` ↔ `SC4001EC-Hypnogram.edf`。"""
+    pairs = []
+    for psg in sorted(Path(directory).glob("sleep-cassette/*-PSG.edf")):
+        stem = psg.name.replace("-PSG.edf", "")
+        for variant in "C0123456":
+            candidate = psg.with_name(f"{stem[:-1]}{variant}-Hypnogram.edf")
+            if candidate.exists():
+                pairs.append((psg.name, candidate.name))
+                break
+    return pairs
+
+
+def split_subjects(subjects, seed=0):
+    """被试级 7:1.5:1.5 划分；顺序由 seed 固定，划分先于任何模型或指标产生。"""
+    subjects = sorted(subjects)
+    order = np.random.default_rng(seed).permutation(len(subjects))
+    n_validation = max(1, round(.15 * len(subjects)))
+    n_test = max(1, round(.15 * len(subjects)))
+    split = {}
+    for rank, index in enumerate(order):
+        split[subjects[index]] = ("validation" if rank < n_validation
+                                  else "test" if rank < n_validation + n_test else "train")
+    return split
+
+
+MI_HAND_RUNS = ("R03", "R04", "R07", "R08", "R11", "R12")
+
+
+def corpus_spec(kind, directory, seed=0, epoch_stride=4, runs=None):
+    """扫描已下载的全量语料，产出与 `SOURCES` 同构的规格。
+
+    MI 只在 R03/04/07/08/11/12 里取文件：只有这 6 个 run 的 T1/T2 恒为左手/右手，
+    R05/06/09/10/13/14 是"双拳/双脚"，混进来会让二分类标签失去语义。
+    默认再收窄到纯想象 run（R04/08/12），与历史基线同语义；执行 run 可用 `runs` 显式加入。
+    """
+    spec = dict(SOURCES[kind])
+    directory = Path(directory)
+    if kind == "mi":
+        selected = tuple(runs) if runs else ("R04", "R08", "R12")
+        unknown = set(selected) - set(MI_HAND_RUNS)
+        if unknown:
+            raise ValueError(f"这些 run 的 T1/T2 不是左右手: {sorted(unknown)}")
+        candidates = sorted(str(p.relative_to(directory)).replace("\\", "/")
+                            for p in directory.glob("S*/S*R*.edf"))
+        files = [name for name in candidates if Path(name).stem[-3:] in selected]
+        subjects = {name.split("/")[0] for name in files}
+        spec["runs"] = list(selected)
+    else:
+        pairs = sleep_pairs(directory)
+        files = [f"sleep-cassette/{name}" for pair in pairs for name in pair]
+        subjects = {Path(psg).name[:5] for psg, _ in pairs}
+        spec["epoch_stride"] = epoch_stride
+    if not files:
+        raise ValueError(f"{directory} 下没有找到 {kind} 语料，先运行 scripts/download_corpora.py")
+    spec["files"], spec["subjects"] = files, split_subjects(subjects, seed)
+    spec["scope"] = "corpus"
+    return spec
+
 
 
 def download_data(kind, root="data", workers=3, scope="smoke"):
@@ -244,41 +317,68 @@ def signal_summary(x):
                 rms_microvolt=float(np.sqrt(np.mean(np.square(x.astype(np.float64)))) * 1e6))
 
 
-def ingest_data(kind, root="data", scope="smoke"):
+def ingest_data(kind, root="data", scope="smoke", seed=0, epoch_stride=4, runs=None):
     import mne
-    spec = source_spec(kind, scope)
-    raw_directory, download = check_raw(kind, root, scope)
-    spec["files"] = [r["path"] for r in download["files"]]
-    directory = Path(root).resolve() / "processed" / "precheck" / (f"{kind}-v1" if scope == "smoke" else f"{kind}-development-v1")
+    spec = (corpus_spec(kind, raw_dir(root, kind, "corpus"), seed=seed,
+                        epoch_stride=epoch_stride, runs=runs)
+            if scope == "corpus" else source_spec(kind, scope))
+    if scope == "corpus":
+        directory_path = raw_dir(root, kind, scope)
+        if not directory_path.exists():
+            raise ValueError(f"缺少全量语料目录 {directory_path}")
+        download = dict(source=f"https://physionet.org/content/{spec['dataset']}/{spec['version']}/",
+                        files=[dict(path=name) for name in spec["files"]])
+    else:
+        directory_path, download = check_raw(kind, root, scope)
+        spec["files"] = [r["path"] for r in download["files"]]
+    raw_directory = directory_path
+    stage = "corpus" if scope == "corpus" else "precheck"
+    directory = Path(root).resolve() / "processed" / stage / (
+        f"{kind}-v1" if scope == "smoke" else f"{kind}-{scope}-v1")
     directory.mkdir(parents=True, exist_ok=False)
+    ratio = {"smoke": "1:1:1", "development": "6:3:1", "corpus": "7:1.5:1.5"}[scope]
     # Assignment is frozen before loading or windowing; no adaptive split selection.
     write_json(directory / "protocol.json", dict(
         protocol_version=1, kind=kind, subject_split=spec["subjects"],
-        use="real_data_pipeline_smoke_not_competition_training", sample_rate=spec["sample_rate"],
+        use="real_data_pipeline_smoke_not_competition_training" if scope == "smoke"
+        else "local_corpus_scale_experiment_not_competition_training",
+        sample_rate=spec["sample_rate"],
         preprocessing="MI: fixed 8-30Hz 4th-order zero-phase Butterworth per independent run; sleep: native EEG unfiltered",
         unit="MNE read_raw_edf returns volt; no extra microvolt conversion",
         reference="preserve acquisition reference; no learned re-reference",
         window="MI: annotation+[0.5,4.0)s; sleep:30s, sleep span+30min wake each side",
+        coordinates="mne standard_1020 template, head cartesian, meter; bipolar derivations use the midpoint",
         fit="global normalization and any learned baseline only on train",
-        split_ratio="1:1:1" if scope == "smoke" else "6:3:1",
+        split_ratio=ratio,
+        epoch_stride=spec.get("epoch_stride", 1),
+        mi_runs=spec.get("runs"),
         evaluation="local exploratory development, not official 8:1:1", final_test="reserved; no model evaluation"))
     records, audit, vocabulary = [], [], {}
+    channel_kind = "bipolar_derivation" if kind == "sleep" else "scalp_acquisition_channel"
+    resolved = [0, 0]
     def save(x, channel_names, name, target, subject, session, trial, start, stop, raw_files):
         if not np.isfinite(x).all() or np.std(x) == 0:
             raise ValueError(f"Invalid signal: {name}")
         for channel in channel_names:
             if channel not in vocabulary:
                 vocabulary[channel] = len(vocabulary)
+        coords, coord_valid = coordinates_for(channel_names, channel_kind)
+        resolved[0] += int(coord_valid.sum())
+        resolved[1] += len(channel_names)
+        if coord_valid.mean() < .9:
+            raise ValueError(f"Coordinate lookup failed for {name}: "
+                             f"{', '.join(c for c, ok in zip(channel_names, coord_valid) if not ok)}")
         path = directory / (name + ".npz")
         np.savez(path, x=x.astype(np.float32), channel_ids=np.array([vocabulary[c] for c in channel_names]),
-                 coords=np.zeros((len(channel_names), 3), np.float32),
-                 coord_valid=np.zeros(len(channel_names), bool), target=np.array(target, dtype=np.int64))
+                 coords=coords, coord_valid=coord_valid, target=np.array(target, dtype=np.int64))
         records.append(dict(path=path.name, sha256=sha256(path), sample_id=name, dataset=spec["dataset"],
                             subject=subject, session=session, trial=trial, split=spec["subjects"][subject],
                             source_files=raw_files, start_sample=start, stop_sample=stop))
     if kind == "mi":
         expected_names = None
-        for relative in spec["files"]:
+        for order, relative in enumerate(spec["files"]):
+            if scope == "corpus" and order % 10 == 0:
+                print(f"mi ingest {order}/{len(spec['files'])}: {relative}", flush=True)
             subject = relative.split("/")[0]
             session = Path(relative).stem[-3:]
             raw = mne.io.read_raw_edf(raw_directory / relative, preload=True, verbose="ERROR")
@@ -303,8 +403,11 @@ def ingest_data(kind, root="data", scope="smoke"):
                               events=[dict(onset=float(o), duration=float(d), description=str(s)) for o, d, s in zip(raw.annotations.onset, raw.annotations.duration, raw.annotations.description)],
                               unit="volt", physical_dimensions=raw._orig_units))
     else:
-        for psg_name, hyp_name in zip(spec["files"][::2], spec["files"][1::2]):
-            subject = Path(psg_name).name[:5]
+        for order, (psg_name, hyp_name) in enumerate(zip(spec["files"][::2], spec["files"][1::2])):
+            if scope == "corpus" and order % 10 == 0:
+                print(f"sleep ingest {order}/{len(spec['files']) // 2}: {psg_name}", flush=True)
+            stem = Path(psg_name).name
+            subject, night = stem[:5], stem[5]
             raw = mne.io.read_raw_edf(raw_directory / psg_name,
                                     include=["EEG Fpz-Cz", "EEG Pz-Oz"], preload=True, verbose="ERROR")
             if raw.info["sfreq"] != 100 or set(raw.ch_names) != {"EEG Fpz-Cz", "EEG Pz-Oz"}:
@@ -317,27 +420,35 @@ def ingest_data(kind, root="data", scope="smoke"):
             if annotations.orig_time is not None and raw.info["meas_date"] != annotations.orig_time:
                 raise ValueError("PSG/hypnogram time origins differ")
             intervals, excluded, crop = sleep_epoch_intervals(annotations, 100, raw.n_times)
+            stride = spec.get("epoch_stride", 1)
+            kept = intervals[::stride] if stride > 1 else intervals
             signal = raw.get_data()
             names = [name.removeprefix("EEG ") for name in raw.ch_names]
-            for annotation, epoch, start, stop, target in intervals:
-                name = f"{subject}_night1_sample{start:08d}"
-                save(signal[:, start:stop], names, name, target, subject, "night1",
+            for annotation, epoch, start, stop, target in kept:
+                name = f"{subject}_night{night}_sample{start:08d}"
+                save(signal[:, start:stop], names, name, target, subject, f"night{night}",
                      f"{annotation}:{epoch}", start, stop, [psg_name, hyp_name])
             audit.append(dict(file=psg_name, hypnogram=hyp_name, subject=subject, channels=names,
                               native=signal_summary(signal), unit="volt", physical_dimensions=raw._orig_units,
-                              retained_epochs=len(intervals), exclusions=excluded, crop_seconds=crop,
+                              retained_epochs=len(kept), scored_epochs=len(intervals), epoch_stride=stride,
+                              exclusions=excluded[:20], crop_seconds=crop,
                               measurement_date=raw.info["meas_date"].isoformat(),
                               hypnogram_measurement_date=hyp_header.info["meas_date"].isoformat(),
                               annotation_date=annotations.orig_time.isoformat() if annotations.orig_time else None))
     audit_splits(records, "subject")
+    record_path = raw_directory / ("download_record-development.json" if scope == "development"
+                                  else "download_record.json")
     manifest = dict(sample_rate=spec["sample_rate"], unit="volt", coordinate_unit="meter",
-                    coordinate_frame="unknown_not_used; channel identities documented",
+                    coordinate_frame="mne_head_cartesian; standard_1020 template; +x right, +y front, +z up",
                     channel_vocabulary={str(v): k for k, v in vocabulary.items()},
-                    channel_kind="bipolar_derivation" if kind == "sleep" else "scalp_acquisition_channel",
-                    use_status="approved", use_scope="local_research_precheck_only",
-                    evidence="real_data_pipeline_smoke", group_by="subject", labels=spec["labels"],
+                    channel_kind=channel_kind,
+                    use_status="approved",
+                    use_scope="local_research_precheck_only" if scope != "corpus" else "local_corpus_scale_experiment",
+                    evidence="real_data_pipeline_smoke" if scope == "smoke" else f"real_data_{scope}",
+                    group_by="subject", labels=spec["labels"],
                     source=download["source"], source_version=spec["version"],
-                    download_record_sha256=sha256(raw_directory / ("download_record.json" if scope == "smoke" else "download_record-development.json")),
+                    coordinate_resolution=round(resolved[0] / max(resolved[1], 1), 4),
+                    download_record_sha256=sha256(record_path),
                     protocol_sha256=sha256(directory / "protocol.json"), samples=records)
     write_json(directory / "manifest.json", manifest)
     targets = {split: [] for split in ("train", "validation", "test")}
