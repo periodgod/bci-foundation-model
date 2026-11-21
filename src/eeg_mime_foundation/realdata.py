@@ -313,6 +313,21 @@ def signal_summary(x):
                 rms_microvolt=float(np.sqrt(np.mean(np.square(x.astype(np.float64)))) * 1e6))
 
 
+def window_issue(x):
+    """窗口是否还带信息；返回 None 表示可用。
+
+    Sleep-EDF 的 telemetry 记录里存在真实的通道掉线：ST7012 的第 2 夜有 240 秒
+    两个 EEG 通道同时恒为 -0.183 µV。这种窗口的睡眠分期标签没有可学的信号，
+    留在训练集里等于教模型"常数输入对应某一期"。只剔除"全部通道都平"的窗口；
+    单通道平直是真实采集伪迹（蒙太奇退化），保留。
+    """
+    if not np.isfinite(x).all():
+        return "non_finite"
+    if x.size and np.all(np.std(x, axis=1) == 0):
+        return "flat_channels"
+    return None
+
+
 def ingest_data(kind, root="data", scope="smoke", seed=0, epoch_stride=4, runs=None):
     import mne
     spec = (corpus_spec(kind, raw_dir(root, kind, "corpus"), seed=seed,
@@ -351,6 +366,7 @@ def ingest_data(kind, root="data", scope="smoke", seed=0, epoch_stride=4, runs=N
         mi_runs=spec.get("runs"),
         evaluation="local exploratory development, not official 8:1:1", final_test="reserved; no model evaluation"))
     records, audit, vocabulary = [], [], {}
+    skipped_windows = []
     channel_kind = "bipolar_derivation" if kind == "sleep" else "scalp_acquisition_channel"
     resolved = [0, 0]
     def save(x, channel_names, name, target, subject, session, trial, start, stop, raw_files):
@@ -428,17 +444,33 @@ def ingest_data(kind, root="data", scope="smoke", seed=0, epoch_stride=4, runs=N
             kept = intervals[::stride] if stride > 1 else intervals
             signal = raw.get_data()
             names = [name.removeprefix("EEG ") for name in raw.ch_names]
+            skipped = []
             for annotation, epoch, start, stop, target in kept:
                 name = f"{subject}_night{night}_sample{start:08d}"
-                save(signal[:, start:stop], names, name, target, subject, f"night{night}",
+                segment = signal[:, start:stop]
+                issue = window_issue(segment)
+                if issue:
+                    skipped.append(dict(sample=name, sample_index=start, reason=issue))
+                    continue
+                save(segment, names, name, target, subject, f"night{night}",
                      f"{annotation}:{epoch}", start, stop, [psg_name, hyp_name])
             audit.append(dict(file=psg_name, hypnogram=hyp_name, subject=subject, channels=names,
                               native=signal_summary(signal), unit="volt", physical_dimensions=raw._orig_units,
-                              retained_epochs=len(kept), scored_epochs=len(intervals), epoch_stride=stride,
+                              retained_epochs=len(kept) - len(skipped), scored_epochs=len(intervals),
+                              epoch_stride=stride, skipped_windows=len(skipped), skipped=skipped[:20],
                               exclusions=excluded[:20], crop_seconds=crop,
                               measurement_date=raw.info["meas_date"].isoformat(),
                               hypnogram_measurement_date=hyp_header.info["meas_date"].isoformat(),
                               annotation_date=annotations.orig_time.isoformat() if annotations.orig_time else None))
+            skipped_windows += skipped
+    # 剔除必须是"个别记录里的采集伪迹"，不是系统性地丢数据；比例过高说明预处理或配对出了问题。
+    total_windows = len(records) + len(skipped_windows)
+    if total_windows and len(skipped_windows) / total_windows > .02:
+        raise ValueError(f"剔除比例 {len(skipped_windows)}/{total_windows} 超过 2%，"
+                         "先检查信号质量与标注对齐，不要直接训练")
+    if skipped_windows:
+        print(f"剔除无效窗口 {len(skipped_windows)}/{total_windows}"
+              f"（{len({s['sample'].split('_')[0] for s in skipped_windows})} 名被试）", flush=True)
     audit_splits(records, "subject")
     record_path = raw_directory / ("download_record-development.json" if scope == "development"
                                   else "download_record.json")
@@ -450,6 +482,7 @@ def ingest_data(kind, root="data", scope="smoke", seed=0, epoch_stride=4, runs=N
                     use_scope="local_research_precheck_only" if scope != "corpus" else "local_corpus_scale_experiment",
                     evidence="real_data_pipeline_smoke" if scope == "smoke" else f"real_data_{scope}",
                     group_by="subject", labels=spec["labels"],
+                    skipped_windows=len(skipped_windows), skipped_examples=skipped_windows[:20],
                     source=download["source"], source_version=spec["version"],
                     coordinate_resolution=round(resolved[0] / max(resolved[1], 1), 4),
                     download_record_sha256=sha256(record_path),

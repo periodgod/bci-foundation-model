@@ -45,3 +45,27 @@ class RealDataTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class WindowIssueTests(unittest.TestCase):
+    """全平窗口要被剔除，单通道平直要保留。"""
+
+    def test_flat_across_all_channels_is_rejected(self):
+        import numpy as np
+        from eeg_mime_foundation.realdata import window_issue
+        x = np.full((2, 3000), -1.831e-07)
+        self.assertEqual(window_issue(x), "flat_channels")
+
+    def test_single_flat_channel_is_kept(self):
+        import numpy as np
+        from eeg_mime_foundation.realdata import window_issue
+        x = np.zeros((2, 3000))
+        x[0] = np.random.default_rng(0).normal(size=3000)
+        self.assertIsNone(window_issue(x))
+
+    def test_non_finite_is_rejected(self):
+        import numpy as np
+        from eeg_mime_foundation.realdata import window_issue
+        x = np.zeros((2, 3000))
+        x[0, 5] = np.nan
+        self.assertEqual(window_issue(x), "non_finite")
