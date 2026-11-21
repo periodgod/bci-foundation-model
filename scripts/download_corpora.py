@@ -143,6 +143,10 @@ def download_one(name: str, version: str, path: str, root: Path, expected: str |
             return dict(path=path, bytes=target.stat().st_size, status="cached")
 
     part = target.with_suffix(target.suffix + ".part")
+    if part.exists() and expected and sha256_of(part) == expected:
+        # 上一次跑到写满但没来得及重命名：直接验收，不重下。
+        part.replace(target)
+        return dict(path=path, bytes=target.stat().st_size, status="downloaded")
     size = remote_size(name, version, path)
     if size and size > chunk_bytes and chunk_jobs > 1:
         download_ranged(name, version, path, part, size, chunk_bytes, chunk_jobs)
@@ -199,7 +203,9 @@ def main() -> None:
     ap.add_argument("--root", required=True, help="数据根目录，例如 D:/wyu-bci-data")
     ap.add_argument("--jobs", type=int, default=8)
     ap.add_argument("--chunk-mb", type=int, default=8, help="大于该体积的文件按区间并发下载")
-    ap.add_argument("--chunk-jobs", type=int, default=8, help="每个大文件的并发区间数，0 表示关闭")
+    ap.add_argument("--chunk-jobs", type=int, default=0,
+                    help="每个大文件的并发区间数；默认 0 关闭。"
+                         "本机实测：区间模式单文件更快，但连接挂起时会把整批卡住")
     ap.add_argument("--subjects", nargs="*", default=None, help="只下指定被试，如 S001 S002")
     ap.add_argument("--dry-run", action="store_true")
     args = ap.parse_args()
