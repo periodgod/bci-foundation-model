@@ -34,11 +34,41 @@ SOURCES = {
 }
 
 
+# BCI Competition IV 2a/2b：跨设备迁移的外部语料，不在 PhysioNet 下载链路上。
+# 两个库都只输出左右手二类，与 EEGMMIDB 的 R04/R08/R12 同语义；四类的 foot/tongue
+# 显式排除并记账，避免"同一个标签在不同库里含义不同"。
+BCIC_SOURCES = {
+    "bcic2a": {
+        "dataset": "bciciv2a", "version": "1.0.0",
+        "native_rate": 250, "sample_rate": 160,
+        "labels": ["left_hand_imagery", "right_hand_imagery"],
+        "prefix": "EEG-", "onset": 0.0, "seconds": 4.0,
+        "codes": {"769": 0, "770": 1}, "ignored": {"771": 2, "772": 3},
+        "subject_chars": 3,
+    },
+    "bcic2b": {
+        "dataset": "bciciv2b", "version": "1.0.0",
+        "native_rate": 250, "sample_rate": 160,
+        "labels": ["left_hand_imagery", "right_hand_imagery"],
+        "prefix": "EEG:", "onset": 0.0, "seconds": 4.0,
+        "codes": {"769": 0, "770": 1}, "ignored": {},
+        "subject_chars": 3,
+    },
+}
+
+# 两个库的 trial 都有 beep(768)：cue 后 3 s 出现，想象期从这里开始。
+BCIC_ANCHOR = "768"
+
+
 def write_json(path, value):
     Path(path).write_text(json.dumps(value, ensure_ascii=False, indent=2, allow_nan=False), encoding="utf-8")
 
 
 def source_spec(kind, scope):
+    if kind in BCIC_SOURCES:
+        if scope != "corpus":
+            raise ValueError("BCIC IV 语料只能以 corpus 方式接入")
+        return dict(BCIC_SOURCES[kind], files=[], subjects={}, scope="corpus")
     spec = dict(SOURCES[kind])
     if scope == "development":
         ids = range(1, 11) if kind == "mi" else range(10)
@@ -55,7 +85,12 @@ def source_spec(kind, scope):
     return spec
 
 
-def raw_dir(root, kind, scope):
+def raw_dir(root, kind, scope, explicit=None):
+    if explicit:
+        return Path(explicit).resolve()
+    if kind in BCIC_SOURCES:
+        spec = BCIC_SOURCES[kind]
+        return Path(root).resolve() / spec["dataset"] / spec["version"]
     spec = SOURCES[kind]
     base = Path(root).resolve()
     if scope == "corpus":
@@ -91,9 +126,14 @@ def corpus_spec(kind, directory, seed=0, epoch_stride=4, runs=None):
     R05/06/09/10/13/14 是"双拳/双脚"，混进来会让二分类标签失去语义。
     默认再收窄到纯想象 run（R04/08/12），与历史基线同语义；执行 run 可用 `runs` 显式加入。
     """
-    spec = dict(SOURCES[kind])
+    spec = dict(SOURCES[kind]) if kind in SOURCES else dict(BCIC_SOURCES[kind])
     directory = Path(directory)
-    if kind == "mi":
+    if kind in BCIC_SOURCES:
+        files = sorted(p.name for p in directory.glob("*.gdf"))
+        if not files:
+            raise ValueError(f"{directory} 下没有 gdf，先指定 --raw 指向 BCIC IV 目录")
+        subjects = {name[:BCIC_SOURCES[kind]["subject_chars"]] for name in files}
+    elif kind == "mi":
         selected = tuple(runs) if runs else ("R04", "R08", "R12")
         unknown = set(selected) - set(MI_HAND_RUNS)
         if unknown:
@@ -307,6 +347,100 @@ def sleep_epoch_intervals(annotations, fs, n_times):
     return intervals, excluded, [lower, upper]
 
 
+def bcic_channels(names, prefix):
+    """挑出文件自带真名的 EEG 导联。
+
+    BCI IV 2a 的 gdf 只有 5 个导联写了电极名（Fz/C3/Cz/C4/Pz），其余 17 个是
+    `EEG-0`…`EEG-16` 占位符。占位符对应的电极位置只能靠外部文档推断，补错会让
+    坐标与图偏置全错，而这类错误在指标上不会报错。所以只保留可核验的通道，
+    丢弃数量交给 audit 记账——宁可少 17 导，也不要一个猜出来的蒙太奇。
+    """
+    keep_index, keep_names, placeholders, others = [], [], [], []
+    prefix_upper = prefix.upper()
+    for index, name in enumerate(names):
+        text = str(name)
+        if not text.upper().startswith(prefix_upper):
+            others.append(text)
+            continue
+        label = text[len(prefix):].strip().strip(".")
+        if not label or label.isdigit():
+            placeholders.append(text)
+            continue
+        keep_index.append(index)
+        keep_names.append(label.upper())
+    return keep_index, keep_names, placeholders, others
+
+
+def bcic_truth_labels(path):
+    """读官方真值 `classlabel`（1..4 或 1..2）。E session 唯一可用的标签来源。"""
+    from scipy.io import loadmat
+
+    mat = loadmat(path, squeeze_me=True, struct_as_record=False)
+    if "classlabel" not in mat:
+        raise ValueError(f"{path} 缺少 classlabel")
+    return [int(value) for value in np.atleast_1d(mat["classlabel"]).ravel()]
+
+
+def bcic_trials(annotations, fs, n_times, offset, seconds, codes, truth=None):
+    """以 beep(`768`) 为 t=0 切窗，标签来自事件码或官方真值。
+
+    用 768 而不是 cue(`769`–`772`) 作锚点：E session 官方不给事件码，只给
+    `classlabel`，但 768 两边都有。两种标签来源都按试次顺序与 768 严格对齐，
+    数量不一致直接抛错——错位一格就会让标签整体平移，而指标不会报错。
+    """
+    onsets, cue_codes = [], []
+    for onset, description in zip(annotations.onset, annotations.description):
+        code = str(description).strip()
+        if code == BCIC_ANCHOR:
+            onsets.append(float(onset))
+        elif code in {"769", "770", "771", "772"}:
+            cue_codes.append(code)
+    if cue_codes:
+        if len(cue_codes) != len(onsets):
+            raise ValueError(f"事件码 {len(cue_codes)} 个与 beep {len(onsets)} 个不匹配")
+        source = "gdf_event_code"
+        labels = [codes.get(code) for code in cue_codes]
+    elif truth is not None:
+        if len(truth) != len(onsets):
+            raise ValueError(f"真值 {len(truth)} 条与 beep {len(onsets)} 个不匹配")
+        source = "official_truth_mat"
+        labels = [codes.get(str(int(value) + 768)) for value in truth]
+    else:
+        raise ValueError("既没有 769/770 事件码，也没有官方真值")
+    span = int(round(seconds * fs))
+    intervals, excluded = [], []
+    for index, (onset, label) in enumerate(zip(onsets, labels)):
+        if label is None:
+            excluded.append(dict(trial=index, reason="not_a_hand_class"))
+            continue
+        start = int(round((onset + offset) * fs))
+        stop = start + span
+        if start < 0 or stop > n_times:
+            excluded.append(dict(trial=index, reason="window_outside_record"))
+            continue
+        intervals.append((index, start, stop, label))
+    return intervals, excluded, source
+
+
+def bcic_download_record(directory, spec):
+    """原始 gdf 的哈希清单；首次计算后按大小复核，避免每次 ingest 重读 800 MB。"""
+    directory = Path(directory)
+    record_path = directory / "download_record.json"
+    files = sorted(p.name for p in directory.glob("*.gdf"))
+    if record_path.exists():
+        record = json.loads(record_path.read_text(encoding="utf-8"))
+        known = {item["path"]: item["bytes"] for item in record.get("files", [])}
+        if set(known) == set(files) and all(
+                known[name] == (directory / name).stat().st_size for name in files):
+            return record_path, record
+    record = dict(source=f"local:{directory.as_posix()}", dataset=spec["dataset"],
+                  version=spec["version"],
+                  files=[dict(path=name, bytes=(directory / name).stat().st_size,
+                              sha256=sha256(directory / name)) for name in files])
+    write_json(record_path, record)
+    return record_path, record
+
+
 def signal_summary(x):
     return dict(shape=list(x.shape), finite=bool(np.isfinite(x).all()),
                 peak_abs_microvolt=float(np.max(np.abs(x)) * 1e6),
@@ -328,12 +462,19 @@ def window_issue(x):
     return None
 
 
-def ingest_data(kind, root="data", scope="smoke", seed=0, epoch_stride=4, runs=None):
+def ingest_data(kind, root="data", scope="smoke", seed=0, epoch_stride=4, runs=None, raw=None,
+                labels=None):
     import mne
-    spec = (corpus_spec(kind, raw_dir(root, kind, "corpus"), seed=seed,
+    spec = (corpus_spec(kind, raw_dir(root, kind, "corpus", raw), seed=seed,
                         epoch_stride=epoch_stride, runs=runs)
             if scope == "corpus" else source_spec(kind, scope))
-    if scope == "corpus":
+    if kind in BCIC_SOURCES:
+        directory_path = raw_dir(root, kind, scope, raw)
+        if not directory_path.exists():
+            raise ValueError(f"缺少 BCIC 目录 {directory_path}，用 --raw 显式指定")
+        _, download = bcic_download_record(directory_path, spec)
+        spec["files"] = [item["path"] for item in download["files"]]
+    elif scope == "corpus":
         directory_path = raw_dir(root, kind, scope)
         if not directory_path.exists():
             raise ValueError(f"缺少全量语料目录 {directory_path}")
@@ -348,25 +489,41 @@ def ingest_data(kind, root="data", scope="smoke", seed=0, epoch_stride=4, runs=N
         f"{kind}-v1" if scope == "smoke" else f"{kind}-{scope}-v1")
     directory.mkdir(parents=True, exist_ok=False)
     ratio = {"smoke": "1:1:1", "development": "6:3:1", "corpus": "7:1.5:1.5"}[scope]
+    if kind in BCIC_SOURCES:
+        preprocessing = (f"native {spec['native_rate']} Hz resampled to {spec['sample_rate']} Hz before filtering; "
+                         "8-30Hz 4th-order zero-phase Butterworth per session file")
+        window_text = (f"beep(768) + [{spec['onset']:g},{spec['onset'] + spec['seconds']:g}) s; "
+                       "labels from gdf 769/770 when present, else the official classlabel file; "
+                       "foot/tongue are dropped, never folded into a hand class")
+        unit = "MNE read_raw_gdf returns volt"
+        extra = dict(native_sample_rate=spec["native_rate"], bcic_codes=spec["codes"],
+                     bcic_ignored_codes={str(k): v for k, v in spec["ignored"].items()},
+                     channel_selection="keep only channels carrying a real electrode label; "
+                                       "number-shaped placeholders such as EEG-0 are dropped, never guessed")
+    else:
+        preprocessing = ("MI: resample to 160 Hz when native rate differs (S088/S092/S100 are 128 Hz); "
+                         "fixed 8-30Hz 4th-order zero-phase Butterworth per independent run; sleep: native EEG unfiltered")
+        window_text = "MI: annotation+[0.5,4.0)s; sleep:30s, sleep span+30min wake each side"
+        unit = "MNE read_raw_edf returns volt; no extra microvolt conversion"
+        extra = dict(epoch_stride=spec.get("epoch_stride", 1), mi_runs=spec.get("runs"))
     # Assignment is frozen before loading or windowing; no adaptive split selection.
     write_json(directory / "protocol.json", dict(
         protocol_version=1, kind=kind, subject_split=spec["subjects"],
         use="real_data_pipeline_smoke_not_competition_training" if scope == "smoke"
         else "local_corpus_scale_experiment_not_competition_training",
         sample_rate=spec["sample_rate"],
-        preprocessing="MI: resample to 160 Hz when native rate differs (S088/S092/S100 are 128 Hz); "
-                      "fixed 8-30Hz 4th-order zero-phase Butterworth per independent run; sleep: native EEG unfiltered",
-        unit="MNE read_raw_edf returns volt; no extra microvolt conversion",
+        preprocessing=preprocessing,
+        unit=unit,
         reference="preserve acquisition reference; no learned re-reference",
-        window="MI: annotation+[0.5,4.0)s; sleep:30s, sleep span+30min wake each side",
+        window=window_text,
         coordinates="mne standard_1020 template, head cartesian, meter; bipolar derivations use the midpoint",
         fit="global normalization and any learned baseline only on train",
         split_ratio=ratio,
-        epoch_stride=spec.get("epoch_stride", 1),
-        mi_runs=spec.get("runs"),
-        evaluation="local exploratory development, not official 8:1:1", final_test="reserved; no model evaluation"))
+        evaluation="local exploratory development, not official 8:1:1", final_test="reserved; no model evaluation",
+        **extra))
     records, audit, vocabulary = [], [], {}
     skipped_windows = []
+    unlabeled, label_sources = [], {}
     channel_kind = "bipolar_derivation" if kind == "sleep" else "scalp_acquisition_channel"
     resolved = [0, 0]
     def save(x, channel_names, name, target, subject, session, trial, start, stop, raw_files):
@@ -422,7 +579,7 @@ def ingest_data(kind, root="data", scope="smoke", seed=0, epoch_stride=4, runs=N
                               native_sample_rate=native_rate, resampled_to=160 if native_rate != 160 else None,
                               events=[dict(onset=float(o), duration=float(d), description=str(s)) for o, d, s in zip(raw.annotations.onset, raw.annotations.duration, raw.annotations.description)],
                               unit="volt", physical_dimensions=raw._orig_units))
-    else:
+    elif kind == "sleep":
         for order, (psg_name, hyp_name) in enumerate(zip(spec["files"][::2], spec["files"][1::2])):
             if scope == "corpus" and order % 10 == 0:
                 print(f"sleep ingest {order}/{len(spec['files']) // 2}: {psg_name}", flush=True)
@@ -463,6 +620,69 @@ def ingest_data(kind, root="data", scope="smoke", seed=0, epoch_stride=4, runs=N
                               hypnogram_measurement_date=hyp_header.info["meas_date"].isoformat(),
                               annotation_date=annotations.orig_time.isoformat() if annotations.orig_time else None))
             skipped_windows += skipped
+    else:  # BCIC IV 2a/2b：外部设备，只保可核验导联，二类左右手
+        expected_index = None
+        for order, name in enumerate(spec["files"]):
+            print(f"{kind} ingest {order}/{len(spec['files'])}: {name}", flush=True)
+            stem = Path(name).stem
+            subject, session = stem[:spec["subject_chars"]], stem[spec["subject_chars"]:]
+            raw_file = mne.io.read_raw_gdf(raw_directory / name, preload=True, verbose="ERROR")
+            if abs(float(raw_file.info["sfreq"]) - spec["native_rate"]) > 1e-6:
+                raise ValueError(f"Unexpected {kind} sample rate: {name}")
+            keep_index, channel_names, placeholders, others = bcic_channels(raw_file.ch_names, spec["prefix"])
+            if not channel_names:
+                raise ValueError(f"{name} 没有可核验的 EEG 导联名")
+            if expected_index is not None and keep_index != expected_index:
+                raise ValueError(f"{kind} 导联位置在同一库内不一致：{name}")
+            expected_index = keep_index
+            raw_file.resample(spec["sample_rate"], verbose="ERROR")
+            original = raw_file.get_data()
+            truth = None
+            if labels:
+                truth_path = Path(labels) / (stem + ".mat")
+                if truth_path.exists():
+                    truth = bcic_truth_labels(truth_path)
+            try:
+                intervals, excluded, source = bcic_trials(
+                    raw_file.annotations, spec["sample_rate"], raw_file.n_times,
+                    spec["onset"], spec["seconds"], spec["codes"], truth)
+            except ValueError as error:
+                # E session 既无事件码也无真值文件时只记账，不静默丢一半数据。
+                unlabeled.append(dict(file=name, reason=str(error)))
+                continue
+            label_sources[session] = source
+            raw_file.filter(8., 30., method="iir", iir_params=dict(order=4, ftype="butter"),
+                            phase="zero", verbose="ERROR")
+            filtered = raw_file.get_data()
+            signal = filtered[keep_index]
+            for index, start, stop, target in intervals:
+                sample = f"{subject}_{session}_event{index:03d}"
+                issue = window_issue(signal[:, start:stop])
+                if issue:
+                    skipped_windows.append(dict(sample=sample, sample_index=start, reason=issue))
+                    continue
+                save(signal[:, start:stop], channel_names, sample, target, subject, session,
+                     str(index), start, stop, [name])
+            audit.append(dict(file=name, subject=subject, session=session, channels=channel_names,
+                              dropped_placeholders=placeholders, non_eeg=others,
+                              native=signal_summary(original), filtered=signal_summary(filtered),
+                              retained_trials=len(intervals), excluded=excluded,
+                              label_source=source,
+                              native_sample_rate=spec["native_rate"], resampled_to=spec["sample_rate"],
+                              ignored_codes=spec["ignored"],
+                              events=[dict(onset=float(o), duration=float(d), description=str(s))
+                                      for o, d, s in zip(raw_file.annotations.onset,
+                                                         raw_file.annotations.duration,
+                                                         raw_file.annotations.description)],
+                              unit="volt", physical_dimensions=raw_file._orig_units))
+        if unlabeled:
+            kept_files = len(spec["files"]) - len(unlabeled)
+            print(f"{kind} 跳过无标签 session {len(unlabeled)}/{len(spec['files'])}："
+                  f"{', '.join(item['file'] for item in unlabeled[:5])}", flush=True)
+            if not kept_files:
+                raise ValueError(f"{kind} 没有任何 session 能取到标签；检查 --labels 是否指向真值目录")
+        if not records:
+            raise ValueError(f"{kind} 没有产出任何窗口")
     # 剔除必须是"个别记录里的采集伪迹"，不是系统性地丢数据；比例过高说明预处理或配对出了问题。
     total_windows = len(records) + len(skipped_windows)
     if total_windows and len(skipped_windows) / total_windows > .02:
@@ -486,7 +706,9 @@ def ingest_data(kind, root="data", scope="smoke", seed=0, epoch_stride=4, runs=N
                     source=download["source"], source_version=spec["version"],
                     coordinate_resolution=round(resolved[0] / max(resolved[1], 1), 4),
                     download_record_sha256=sha256(record_path),
-                    protocol_sha256=sha256(directory / "protocol.json"), samples=records)
+                    protocol_sha256=sha256(directory / "protocol.json"), samples=records,
+                    **({"unlabeled_sessions": unlabeled, "label_sources": label_sources}
+                       if kind in BCIC_SOURCES else {}))
     write_json(directory / "manifest.json", manifest)
     targets = {split: [] for split in ("train", "validation", "test")}
     for record in records:

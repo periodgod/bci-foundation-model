@@ -113,7 +113,7 @@
 | 跨被试留一（LOSO，fusion） | ✅ 有结果 | 10 折均值 **BA 0.660 ± 0.049**，范围 0.580–0.729。这是当前最可信的基线 |
 | 导联子集迁移（T1，LOSO 协议） | ✅ 有结果 | 64→32/19/8/3 导单调下降，8 导与 3 导 **10/10 折全部下降**。见下节 |
 | 大容量主候选的通道鲁棒性 | ⚠️ **无法给出结论** | 4.9M 主候选在 270 训练窗口下未能收敛到可用状态，通道曲线无意义 |
-| 真实跨设备 / 跨数据集迁移 | ❌ **无数据** | 需要同任务、不同硬件的第二份数据（2a / 2b / OpenBMI），当前只有单一 64 导布局 |
+| 真实跨设备 / 跨数据集迁移 | 🟡 **数据与接口就绪，实验未跑** | 2a 2 592 窗口（5 导）、2b 6 520 窗口（3 导）已入册；三库共享词表 + 混批前向自检通过。**无迁移性能数字** |
 | 全量语料（MI 109 被试 / 睡眠 100 被试） | ✅ **两侧均已切窗入库**：MI 4 917 窗口、睡眠 59 546 窗口；对照组未跑 | 见 [`docs/数据资产与缺口.md`](docs/数据资产与缺口.md) 与 [`docs/全量语料与坐标协议.md`](docs/全量语料与坐标协议.md) |
 | 图偏置 / 导联丢弃对照 | 🟡 **代码与单测完成，结果待跑** | `GraphBlock`、`drop_channels`、`scripts/run_grouped_cv.py` 均已就绪 |
 | BSG 图结构消融 | ❌ **不适用** | BSG 未进入当前管线（见上文） |
@@ -177,9 +177,11 @@
 正交的结构性性质已验证：给 64 通道输入补 16 个标记为无效的通道，logits 差异严格为 0
 （`tests/test_montage.py::test_padding_does_not_change_output`）——"任意通道数可进"在数值上成立，缺的是跨布局的性能保持。
 
-要把它变成"跨设备泛化"的证据，还差两步（见 [`docs/能力与代码对应表.md`](docs/能力与代码对应表.md)）：
-引入 BCI Competition IV 2a / 2b（22 导 / 3 导，不同采样率与参考）做真实跨数据集迁移；
-并对多套布局做重参考 + 重采样 + 坐标对齐的预处理统一。
+**数据侧已经补齐（2026-11-21）**：BCI Competition IV 2a / 2b 已按同一协议接入，
+产出 2 592（5 导）/ 6 520（3 导）个窗口，坐标解析率 1.000，并与 EEGMMIDB 合并出
+全局通道词表（C3/C4/CZ 三库同 id）。三库样本可以在同一个 batch 里前向，坐标冲突为 0。
+上表里的「BCIV-2b 布局」仍是**从 64 导里抽 3 个通道**的模拟子集，不是真实 2b 记录；
+真实跨设备迁移的**训练/评测**尚未运行，因此这里不给出任何"迁移增益"的说法。
 
 ---
 
@@ -208,6 +210,28 @@ python scripts/download_corpora.py --dataset sleep-edfx --root D:/wyu-bci-data -
 # 0.1 切窗并写入真实电极坐标（产出带坐标的 manifest）
 python scripts/prepare_real_data.py ingest --dataset mi    --root D:/wyu-bci-data --scope corpus
 python scripts/prepare_real_data.py ingest --dataset sleep --root D:/wyu-bci-data --scope corpus
+
+# 0.15 跨设备语料（BCIC IV 2a/2b 在本地，不在 PhysioNet 链路上）
+#      E session 官方只给 classlabel，必须配 --labels 才有标签
+python scripts/prepare_real_data.py ingest --dataset bcic2a --scope corpus \
+    --root D:/wyu-bci-data --raw "E:/情绪识别/data/BCICIV_2a/BCICIV_2a_gdf" \
+    --labels "E:/情绪识别/data/BCICIV_2a/sets_2a_true_labels"
+python scripts/prepare_real_data.py ingest --dataset bcic2b --scope corpus \
+    --root D:/wyu-bci-data --raw "E:/情绪识别/data/BCICIV_2b/BCICIV_2b_gdf" \
+    --labels "E:/情绪识别/data/BCICIV_2b/sets 2b true_labels"
+
+# 0.16 合并全局通道词表（不改任何 npz，只产出 local→global 重映射）
+python scripts/build_shared_vocabulary.py \
+    --manifest mi=D:/wyu-bci-data/processed/corpus/mi-corpus-v1/manifest.json \
+    --manifest bcic2a=D:/wyu-bci-data/processed/corpus/bcic2a-corpus-v1/manifest.json \
+    --manifest bcic2b=D:/wyu-bci-data/processed/corpus/bcic2b-corpus-v1/manifest.json \
+    --output D:/wyu-bci-data/processed/corpus/shared-vocabulary-v1
+
+# 0.17 跨库拼 batch 自检（词表、坐标、一次真实前向；不产出指标）
+python scripts/check_cross_dataset.py \
+    --vocabulary D:/wyu-bci-data/processed/corpus/shared-vocabulary-v1 \
+    --manifest mi=<mi manifest> --manifest bcic2a=<2a manifest> \
+    --output D:/wyu-bci-data/processed/corpus/shared-vocabulary-v1/cross_check.json
 
 # 0.2 被试分组交叉验证（大语料上的对照协议；--graph / --channel-dropout 做 A/B）
 python scripts/run_grouped_cv.py --name cv-fusion --arch fusion \
