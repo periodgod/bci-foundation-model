@@ -345,7 +345,8 @@ def ingest_data(kind, root="data", scope="smoke", seed=0, epoch_stride=4, runs=N
         use="real_data_pipeline_smoke_not_competition_training" if scope == "smoke"
         else "local_corpus_scale_experiment_not_competition_training",
         sample_rate=spec["sample_rate"],
-        preprocessing="MI: fixed 8-30Hz 4th-order zero-phase Butterworth per independent run; sleep: native EEG unfiltered",
+        preprocessing="MI: resample to 160 Hz when native rate differs (S088/S092/S100 are 128 Hz); "
+                      "fixed 8-30Hz 4th-order zero-phase Butterworth per independent run; sleep: native EEG unfiltered",
         unit="MNE read_raw_edf returns volt; no extra microvolt conversion",
         reference="preserve acquisition reference; no learned re-reference",
         window="MI: annotation+[0.5,4.0)s; sleep:30s, sleep span+30min wake each side",
@@ -384,8 +385,14 @@ def ingest_data(kind, root="data", scope="smoke", seed=0, epoch_stride=4, runs=N
             subject = relative.split("/")[0]
             session = Path(relative).stem[-3:]
             raw = mne.io.read_raw_edf(raw_directory / relative, preload=True, verbose="ERROR")
-            if raw.info["sfreq"] != 160 or len(raw.ch_names) != 64:
-                raise ValueError("Unexpected MI sample rate/channel count")
+            if len(raw.ch_names) != 64:
+                raise ValueError(f"Unexpected MI channel count: {relative}")
+            native_rate = float(raw.info["sfreq"])
+            if native_rate != 160:
+                # S088/S092/S100 是 128 Hz 采集：同库内的真实采样率差异，重采样而不是丢弃。
+                if scope != "corpus":
+                    raise ValueError("Unexpected MI sample rate outside corpus scope")
+                raw.resample(160, verbose="ERROR")
             names = [name.strip(".").upper() for name in raw.ch_names]
             if len(set(names)) != 64:
                 raise ValueError("MI channel mapping is not unique")
@@ -402,6 +409,7 @@ def ingest_data(kind, root="data", scope="smoke", seed=0, epoch_stride=4, runs=N
                      str(index), start, stop, [relative])
             audit.append(dict(file=relative, subject=subject, channels=names, native=signal_summary(original),
                               filtered=signal_summary(filtered), retained_trials=len(intervals), excluded=excluded,
+                              native_sample_rate=native_rate, resampled_to=160 if native_rate != 160 else None,
                               events=[dict(onset=float(o), duration=float(d), description=str(s)) for o, d, s in zip(raw.annotations.onset, raw.annotations.duration, raw.annotations.description)],
                               unit="volt", physical_dimensions=raw._orig_units))
     else:
