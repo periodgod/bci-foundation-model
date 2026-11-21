@@ -12,6 +12,7 @@ import numpy as np
 
 from .data import audit_splits, sha256
 from .montage import coordinates_for
+from .pairing import scan_sleep_pairs
 
 
 SOURCES = {
@@ -63,16 +64,8 @@ def raw_dir(root, kind, scope):
 
 
 def sleep_pairs(directory):
-    """PSG 与分期标注配对：`SC4001E0-PSG.edf` ↔ `SC4001EC-Hypnogram.edf`。"""
-    pairs = []
-    for psg in sorted(Path(directory).glob("sleep-cassette/*-PSG.edf")):
-        stem = psg.name.replace("-PSG.edf", "")
-        for variant in "C0123456":
-            candidate = psg.with_name(f"{stem[:-1]}{variant}-Hypnogram.edf")
-            if candidate.exists():
-                pairs.append((psg.name, candidate.name))
-                break
-    return pairs
+    """扫描 sleep-cassette 与 sleep-telemetry 两个子库的 PSG/标注配对。"""
+    return scan_sleep_pairs(directory)
 
 
 def split_subjects(subjects, seed=0):

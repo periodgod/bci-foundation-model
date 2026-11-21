@@ -18,6 +18,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import sys
 import threading
 import time
@@ -40,6 +41,7 @@ CORPORA = {
         version="1.0.0",
         license="Open Data Commons Attribution License v1.0",
         summary="Sleep-EDF Expanded，153 条 cassette + 44 条 telemetry",
+        companions="hypnogram",
     ),
     "chbmit": dict(
         version="1.0.0",
@@ -49,6 +51,10 @@ CORPORA = {
 }
 
 _print_lock = threading.Lock()
+
+# 标注文件配对规则与 ingest 侧共用一份实现（纯标准库，不会把 numpy 拖进下载器）。
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from eeg_mime_foundation.pairing import pair_hypnograms  # noqa: E402
 
 
 def _urls(name: str, version: str, path: str) -> list[str]:
@@ -148,6 +154,10 @@ def download_one(name: str, version: str, path: str, root: Path, expected: str |
         part.replace(target)
         return dict(path=path, bytes=target.stat().st_size, status="downloaded")
     size = remote_size(name, version, path)
+    if part.exists() and size and part.stat().st_size >= size:
+        # 早前中断的区间模式会把 .part 预分配到整文件大小，但内容是空洞。
+        # 这时续传位置等于总长度，Range 请求会得到 416，必须从头写。
+        part.unlink()
     if size and size > chunk_bytes and chunk_jobs > 1:
         download_ranged(name, version, path, part, size, chunk_bytes, chunk_jobs)
         digest = sha256_of(part)
@@ -197,6 +207,21 @@ def parse_checksums(text: str) -> dict[str, str]:
     return table
 
 
+def companion_files(records: list[str], checksums: dict[str, str]) -> list[str]:
+    """睡眠库的 RECORDS 只列 PSG，标注文件（Hypnogram）不在清单里。
+
+    命名不能靠替换推导，配对规则与 ingest 侧共用 `pair_hypnograms`，
+    避免下载与切窗对"哪份标注配哪份 PSG"产生两种理解。
+    """
+    hypnograms = [path for path in checksums if "Hypnogram" in path]
+    if not hypnograms:
+        raise RuntimeError("校验清单里没有标注文件，无法补齐睡眠语料")
+    try:
+        pairs = pair_hypnograms(records, hypnograms)
+    except ValueError as exc:
+        raise RuntimeError(str(exc)) from exc
+    return [hypnogram for _, hypnogram in pairs]
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--dataset", required=True, choices=sorted(CORPORA))
@@ -228,6 +253,12 @@ def main() -> None:
         checksums = parse_checksums(checksum_text)
     except RuntimeError as exc:
         print(f"[warn] 无校验清单，仅按大小校验: {exc}")
+
+    if meta.get("companions") == "hypnogram":
+        if not checksums:
+            raise SystemExit("睡眠库必须先拿到 SHA256SUMS.txt，否则无法定位标注文件")
+        companions = companion_files(records, checksums)
+        records = records + companions
 
     print(f"{args.dataset} {version}: {len(records)} 个文件 → {root}")
     if args.dry_run:
