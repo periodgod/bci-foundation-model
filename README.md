@@ -220,20 +220,26 @@ python scripts/prepare_real_data.py ingest --dataset bcic2b --scope corpus \
     --root D:/wyu-bci-data --raw "E:/情绪识别/data/BCICIV_2b/BCICIV_2b_gdf" \
     --labels "E:/情绪识别/data/BCICIV_2b/sets 2b true_labels"
 
-# 0.16 合并全局通道词表（不改任何 npz，只产出 local→global 重映射）
+# 0.16 标签交叉校验（T session 的事件码应与官方真值逐条相同）
+python scripts/verify_bcic_labels.py \
+    --raw "E:/情绪识别/data/BCICIV_2a/BCICIV_2a_gdf" \
+    --labels "E:/情绪识别/data/BCICIV_2a/sets_2a_true_labels" \
+    --output D:/wyu-bci-data/processed/corpus/bcic2a-corpus-v1/label_crosscheck.json
+
+# 0.17 合并全局通道词表（不改任何 npz，只产出 local→global 重映射）
 python scripts/build_shared_vocabulary.py \
     --manifest mi=D:/wyu-bci-data/processed/corpus/mi-corpus-v1/manifest.json \
     --manifest bcic2a=D:/wyu-bci-data/processed/corpus/bcic2a-corpus-v1/manifest.json \
     --manifest bcic2b=D:/wyu-bci-data/processed/corpus/bcic2b-corpus-v1/manifest.json \
     --output D:/wyu-bci-data/processed/corpus/shared-vocabulary-v1
 
-# 0.17 跨库拼 batch 自检（词表、坐标、一次真实前向；不产出指标）
+# 0.18 跨库拼 batch 自检（词表、坐标、一次真实前向；不产出指标）
 python scripts/check_cross_dataset.py \
     --vocabulary D:/wyu-bci-data/processed/corpus/shared-vocabulary-v1 \
     --manifest mi=<mi manifest> --manifest bcic2a=<2a manifest> \
     --output D:/wyu-bci-data/processed/corpus/shared-vocabulary-v1/cross_check.json
 
-# 0.18 跨设备冻结迁移评测（不做微调，归一化统计取检查点里的 train-only 值）
+# 0.19 跨设备冻结迁移评测（不做微调，归一化统计取检查点里的 train-only 值）
 #      按"电极名"把目标库映射到检查点的词表；映射率会写进 metrics.json
 python scripts/run_cross_transfer.py \
     --checkpoint <mi best.pt> \
