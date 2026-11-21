@@ -94,8 +94,9 @@
 | 实验 | 状态 | 说明 |
 |---|---|---|
 | 通道丢弃鲁棒性（MI，小容量模型） | ✅ 有结果 | [`reports/channel_dropout_mi.json`](reports/channel_dropout_mi.json)：154k 参数模型基线 BA 53.6%，保留 8 通道降至 49.5%（20 次随机抽样）。注意小容量模型基线本身偏低 |
-| 6 结构对照（MI，固定 40 epoch，seed 17） | ⚠️ 已完成，**差异不显著** | [`reports/arch_ablation_mi.json`](reports/arch_ablation_mi.json)：跨度 0.506–0.581，小于噪声量级。见下节 |
-| 导联子集迁移（T1，仿真稀疏布局） | ⚠️ 已跑通，**结论不成立** | 64→32/19/8/3 导的 Δ 全部不显著；根因是基线本身处于机会水平。详见下节 |
+| 6 结构对照（MI） | ⚠️ **需重跑** | [`reports/arch_ablation_mi.json`](reports/arch_ablation_mi.json) 用的是后来被证明不具代表性的划分，见下节说明，结论暂不采用 |
+| 跨被试留一（LOSO，fusion） | ✅ 有结果 | 10 折均值 **BA 0.660 ± 0.049**，范围 0.580–0.729。这是当前最可信的基线 |
+| 导联子集迁移（T1，LOSO 协议） | ✅ 有结果 | 64→32/19/8/3 导单调下降，8 导与 3 导 **10/10 折全部下降**。见下节 |
 | 大容量主候选的通道鲁棒性 | ⚠️ **无法给出结论** | 4.9M 主候选在 270 训练窗口下塌缩为常数预测（BA 0.5000），曲线无意义 |
 | 真实跨设备 / 跨数据集迁移 | ❌ **无数据** | 需要同任务、不同硬件的第二份数据（2a / 2b / OpenBMI），当前只有单一 64 导布局 |
 | BSG 图结构消融 | ❌ **不适用** | BSG 未进入当前管线（见上文） |
@@ -104,11 +105,27 @@
 
 > 原则：**没有数据就写没有数据**，不用合成数据冒充结果。缺失项在上表中逐条列出。
 
-### 结构对照（MI）：六个结构都停在机会水平附近
+### 跨被试留一（LOSO）：当前最可信的基线
+
+10 折，每折留一名被试做验证、其余被试训练，fusion 结构、40 epoch：
+
+| 指标 | 值 |
+|---|---|
+| 10 折均值 BA | **0.6595** |
+| 折间标准差 | 0.0488 |
+| 折间范围 | 0.580 – 0.729 |
+| 参数量 | 154k |
+
+复现：`scripts/run_loso.py`，结果：[`experiments/outputs/loso-fusion/summary.json`](experiments/outputs/loso-fusion/summary.json)。
+
+这个数字比早期单次划分高出约 11 个百分点，说明**单次留出划分在本数据规模下不可靠**：
+同样权重换个划分就能从 0.55 跳到 0.66。因此本仓库后续所有对照一律走 LOSO，不再用单次划分下结论。
+
+### 结构对照（MI）：旧划分下的结果不可用，待在 LOSO 协议下重跑
 
 同一划分、同一 epoch 预算（40）、同一随机种子（17），只改 `model.architecture`：
 
-| 结构 | 参数量 | BA |
+| 结构 | 参数量 | BA（旧单划分） |
 |---|---|---|
 | causal | 71k | 0.581 |
 | latent | 187k | 0.559 |
@@ -117,34 +134,45 @@
 | factorized | 138k | 0.526 |
 | hierarchical | 179k | 0.506 |
 
-跨度 0.506–0.581 共 7.6 个百分点，而 135 个留出样本上单次评测的标准误约 4.3 个百分点——
-**这个跨度落在噪声区间内，不能据此给结构排序**；且只跑了单一 seed，下结论需多种子重复。
-唯一可以说的：在这份数据上，没有哪个结构明显跑出机会水平。
+**这张表不采用**，原因有二：
 
-### 导联子集迁移（T1）：脚本可跑，但当前数据给不出有效结论
+1. 它跑在单次划分上，而同一结构（fusion）在 LOSO 下是 0.660 —— 那次划分恰好抽到了困难被试，六个结构的绝对分数被整体压低；
+2. 跨度 0.506–0.581 共 7.6 个百分点，而 135 个留出样本上单次评测的标准误约 4.3 个百分点，跨度小于噪声量级，无法排序。
 
+表内数字只作历史记录。有效版本需要：六结构 × 同一 LOSO 划分 × 至少 3 个种子。
+`scripts/run_arch_ablation.py` 目前只支持单划分，跑 LOSO 版需按 `run_loso.py --arch <name>` 逐结构执行（**待补**）。
+
+### 导联子集迁移（T1，LOSO 协议）：导联越少越差，且在 10 折上一致
+
+协议同上一节：每折模型只在自己留出的被试上评测，10 折取均值。
 同一套权重，只把部分通道置为无效（电极 ID 与坐标保留），模拟换一顶更稀疏的电极帽。
-135 个留出样本（4 名未见被试），指标取被试级 macro BA，Δ 用 2000 次配对 bootstrap 给 95% CI。
-复现：`scripts/eval_montage_transfer.py`，结果：[`reports/montage_transfer_mi_fusion.json`](reports/montage_transfer_mi_fusion.json)。
+复现：`scripts/eval_montage_loso.py`，结果：[`reports/montage_transfer_loso.json`](reports/montage_transfer_loso.json)。
 
-| 条件 | 保留导联 | BA | Δ vs 全导联 | 95% CI |
+| 条件 | 保留导联 | BA（10 折均值） | Δ vs 全导联 | 变差的折数 |
 |---|---|---|---|---|
-| 全导联 | 64 | 0.551 | — | [0.469, 0.630] |
-| 10-10 系统 | 32 | 0.525 | −0.026 | [−0.108, +0.051] |
-| 10-20 系统 | 19 | 0.504 | −0.047 | [−0.127, +0.032] |
-| 感觉运动区 | 8 | 0.522 | −0.029 | [−0.134, +0.077] |
-| BCIV-2b 布局 | 3 | 0.525 | −0.027 | [−0.129, +0.066] |
+| 全导联 | 64 | **0.6595** | — | — |
+| 10-10 系统 | 32 | 0.5804 | −0.079 | 8/10 |
+| 10-20 系统 | 19 | 0.5697 | −0.090 | 9/10 |
+| 感觉运动区 | 8 | 0.5288 | −0.131 | **10/10** |
+| BCIV-2b 布局 | 3 | 0.5200 | −0.140 | **10/10** |
 
-**这张表必须读对。** 所有条件都没有显著下降，**不能**当作"模型对稀疏导联鲁棒"的证据——
-基线本身 95% CI 覆盖 0.5，本来就没有可损失的性能，砍到 3 导自然也不掉。
-同样的道理，脑区整块移除（中央区 −0.001、枕区 −0.002、额区 −0.059）同样全部不显著。
+随机丢弃作为对照（每折随机保留固定通道数，10 折均值）：32 导 0.5760、16 导 0.5616、8 导 0.5390。
 
-要让它变成有效结论，前提是基线先高于机会水平：引入 **BCI Competition IV 2a**
-（22 导 / 9 被试 / 每被试 288 试次）把被试内解码做到 70% 以上，再测同一组导联子集。
+**这是一条成立但方向与"鲁棒"相反的结论：**
 
-与此配套，仓库验证了一个**结构性性质**而非分数：给 64 通道输入补 16 个标记为无效的通道，
-logits 差异严格为 0（`tests/test_montage.py::test_padding_does_not_change_output`）。
-也就是说"任意通道数可进"在数值上是真成立的，不是名义上的——缺的只是能体现差异的强基线。
+- 通道数减少，性能单调下降；到 8 导 / 3 导时 **10 折全部下降**、平均损失 13–14 个百分点。
+  所以**不能**声称"模型对稀疏导联鲁棒"，只能说"架构在数值上接受任意通道数"。
+- 结构化移除与随机移除几乎等价（感觉运动区 8 导 0.5288 vs 随机 8 导 0.5390，差值落在折间标准差内），
+  说明当前模型**没有真正利用电极拓扑**——这正是 `latent` 查询层与坐标编码应当补上的能力，但尚未体现为增益。
+- 脑区整块移除：额区 −0.103（9/10 折变差）、枕区 −0.024、中央区 −0.012。
+  额区影响最大与 MI 的生理先验不符，怀疑与参考电极/眼电残留有关，**需单独验证**，暂不作结论。
+
+正交的结构性性质已验证：给 64 通道输入补 16 个标记为无效的通道，logits 差异严格为 0
+（`tests/test_montage.py::test_padding_does_not_change_output`）——"任意通道数可进"在数值上成立，缺的是跨布局的性能保持。
+
+要把它变成"跨设备泛化"的证据，还差两步（见 [`docs/能力与代码对应表.md`](docs/能力与代码对应表.md)）：
+引入 BCI Competition IV 2a / 2b（22 导 / 3 导，不同采样率与参考）做真实跨数据集迁移；
+并对多套布局做重参考 + 重采样 + 坐标对齐的预处理统一。
 
 ---
 
@@ -153,10 +181,24 @@ logits 差异严格为 0（`tests/test_montage.py::test_padding_does_not_change_
 ```bash
 pip install -e ".[eeg]"
 
-# 结构消融（固定清单、固定 epoch、多种子）
+# 结构消融（固定清单、固定 epoch、多种子；当前仅支持单次划分）
 python scripts/run_arch_ablation.py \
     --manifest <manifest.json> --base-config <config.json> \
-    --output reports/arch_ablation_mi.json --seeds 17 --epochs 8
+    --output reports/arch_ablation_mi.json --seeds 17 --epochs 40
+
+# 跨被试留一（推荐协议，后续结论都以此为准）
+python scripts/run_loso.py --name loso-fusion --arch fusion \
+    --manifest <manifest.json> --base-config <config.json> --epochs 40
+
+# 导联子集迁移（LOSO 协议）
+python scripts/eval_montage_loso.py \
+    --loso-root experiments/outputs/loso-fusion \
+    --output reports/montage_transfer_loso.json --reps 10
+
+# 导联子集迁移（单划分版本，仅用于快速冒烟）
+python scripts/eval_montage_transfer.py \
+    --checkpoint <best.pt> --manifest <manifest.json> \
+    --output reports/montage_transfer.json --reps 20
 
 # 通道丢弃鲁棒性（需多通道且有信号的数据集）
 python scripts/eval_channel_dropout.py \
